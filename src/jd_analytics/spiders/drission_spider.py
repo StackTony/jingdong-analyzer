@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -80,6 +81,32 @@ def clean_title(title: str) -> str:
     return re.sub(r"<.*?>", "", title).strip()
 
 
+def parse_total_sales(value: Any) -> int:
+    """解析京东 totalSales 字段（可能是 int / str / '100万+' / '5000+' 等格式）
+
+    返回整数销量。无法解析返回 0。
+    """
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return 0
+    # '100万+' → 100 * 10000 + 9999 (万级销量取下界+9999 表示 ≥100万)
+    # 实际处理：返回乘以倍数后的下界
+    m = re.match(r"(\d+(?:\.\d+)?)\s*万\+?", s)
+    if m:
+        return int(float(m.group(1)) * 10000)
+    m = re.match(r"(\d+)\+", s)  # '5000+'
+    if m:
+        return int(m.group(1))
+    m = re.match(r"(\d+)", s)  # 纯数字
+    if m:
+        return int(m.group(1))
+    return 0
+
+
 class DrissionSpider:
     """DrissionPage 京东品类爬虫
 
@@ -103,6 +130,9 @@ class DrissionSpider:
         manual_login: bool = False,
         login_wait_seconds: int = 120,
         user_data_path: str | None = None,
+        auto_login: bool = False,
+        login_phone: str | None = None,
+        login_password: str | None = None,
     ):
         self.batch_id = batch_id or self._default_batch_id()
         self.month = month or datetime.now(timezone.utc).strftime("%Y-%m")
@@ -111,6 +141,9 @@ class DrissionSpider:
         self.page_sleep_seconds = page_sleep_seconds
         self.manual_login = manual_login
         self.login_wait_seconds = login_wait_seconds
+        self.auto_login = auto_login
+        self.login_phone = login_phone
+        self.login_password = login_password
         self.user_data_path = user_data_path or (
             r"C:\Users\23363\AppData\Local\Temp\drission_chrome_jd_profile"
         )
@@ -158,8 +191,149 @@ class DrissionSpider:
             f"user_data={self.user_data_path}"
         )
 
-        if self.manual_login:
+        if self.auto_login:
+            self._do_auto_login()
+        elif self.manual_login:
             self._do_manual_login()
+
+    def _check_login_state(self) -> bool:
+        """检查当前是否已登录（pin cookie 存在且未过期）"""
+        assert self.dp is not None
+        # 访问 jd.com 触发 cookies 加载
+        self.dp.get("https://www.jd.com")
+        time.sleep(3)
+        cookies = self.dp.cookies()
+        cookie_names = [c.get("name", "") for c in cookies]
+        is_logged = (
+            "pin" in cookie_names
+            or "pt_pin" in cookie_names
+            or "thor" in cookie_names
+        )
+        logger.info(
+            f"Login check: {'LOGGED IN' if is_logged else 'NOT LOGGED IN'}"
+        )
+        if is_logged:
+            pin_cookie = next(
+                (c for c in cookies if c.get("name") == "pin"), None
+            )
+            if pin_cookie:
+                logger.info(
+                    f"  pin = {pin_cookie.get('value', '')[:20]}..."
+                )
+        return is_logged
+
+    def _do_auto_login(self) -> None:
+        """自动登录京东（用 CVO 提供的手机号 + 密码）
+
+        京东登录页有反爬检测，密码登录可能触发滑块验证。
+        如果触发滑块，会暂停等待用户手动完成。
+        """
+        assert self.dp is not None
+        if not self.login_phone or not self.login_password:
+            logger.error("Auto login requested but phone/password missing")
+            return
+
+        # 先检查是否已登录（profile 复用）
+        if self._check_login_state():
+            logger.info("Already logged in, skip auto login")
+            return
+
+        logger.warning("=" * 60)
+        logger.warning("AUTO LOGIN MODE")
+        logger.warning(f"phone={self.login_phone[:3]}****{self.login_phone[-4:]}")
+        logger.warning("登录态会保存到 user_data_path，下次复用无需再登录")
+        logger.warning("=" * 60)
+
+        # 访问登录页
+        self.dp.get("https://passport.jd.com/new/login.aspx")
+        time.sleep(3)
+
+        # 京东登录页通常有"账号登录" tab，先切换
+        try:
+            account_tab = self.dp.ele("text=账号登录", timeout=3)
+            if account_tab:
+                account_tab.click()
+                time.sleep(1)
+        except Exception:
+            pass
+
+        # 输入手机号
+        try:
+            phone_input = self.dp.ele(
+                'tag:input@type=text', timeout=3
+            ) or self.dp.ele("#username", timeout=2) or self.dp.ele(
+                'name=loginname', timeout=2
+            )
+            if phone_input:
+                phone_input.clear()
+                phone_input.input(self.login_phone)
+                logger.info(f"Phone input filled: {self.login_phone[:3]}****")
+                time.sleep(1)
+        except Exception as e:
+            logger.error(f"Phone input failed: {e}")
+
+        # 输入密码
+        try:
+            pwd_input = self.dp.ele(
+                'tag:input@type=password', timeout=3
+            ) or self.dp.ele("#password", timeout=2) or self.dp.ele(
+                'name=loginpwd', timeout=2
+            ) or self.dp.ele('name=nloginpwd', timeout=2)
+            if pwd_input:
+                pwd_input.clear()
+                pwd_input.input(self.login_password)
+                logger.info("Password input filled")
+                time.sleep(1)
+        except Exception as e:
+            logger.error(f"Password input failed: {e}")
+
+        # 勾选"同意协议"（如果有）
+        try:
+            agree_checkbox = self.dp.ele(
+                'tag:input@type=checkbox', timeout=2
+            )
+            if agree_checkbox and not agree_checkbox.attr("checked"):
+                agree_checkbox.click()
+                time.sleep(0.5)
+        except Exception:
+            pass
+
+        # 点击登录按钮
+        try:
+            login_btn = self.dp.ele(
+                'text=登录', timeout=2
+            ) or self.dp.ele('#loginsubmit', timeout=2) or self.dp.ele(
+                '.btn-img', timeout=2
+            )
+            if login_btn:
+                login_btn.click()
+                logger.info("Login button clicked")
+                time.sleep(5)
+        except Exception as e:
+            logger.error(f"Login button click failed: {e}")
+
+        # 等待登录完成（最多 60s，期间可能需要手动过滑块）
+        logger.warning(
+            "等待登录完成（如遇滑块/验证码，请在浏览器窗口手动完成）"
+        )
+        for i in range(30):
+            time.sleep(2)
+            cookies = self.dp.cookies()
+            cookie_names = [c.get("name", "") for c in cookies]
+            if (
+                "pin" in cookie_names
+                or "pt_pin" in cookie_names
+                or "thor" in cookie_names
+            ):
+                logger.info(f"Login succeeded after {(i+1)*2}s")
+                # 多等几秒让 cookies 完全写入
+                time.sleep(3)
+                return
+
+        logger.error(
+            "Auto login did not detect login cookie within 60s. "
+            "可能需要手动过滑块。"
+        )
 
     def _do_manual_login(self) -> None:
         """打开浏览器让用户手动登录，登录态保存到 user_data_path"""
@@ -249,9 +423,17 @@ class DrissionSpider:
                 break
 
             page += 1
-            # 单 IP 慢爬防封：每页间 sleep
-            sleep_sec = self.page_sleep_seconds + (page % 2)  # 3-4 秒
-            logger.debug(f"Sleeping {sleep_sec}s between pages")
+            # 单 IP 慢爬防封：每页间 sleep + 随机抖动（更接近人类行为）
+            # CVO 要求："千万注意抓取频率，原则是不能被封号，可以慢"
+            # 默认 page_sleep=3.0 + 0-3s 抖动 = 3-6s/页
+            # 加上 5% 概率的 10-20s 长停留（模拟人类阅读）
+            import random
+            if random.random() < 0.05:
+                sleep_sec = random.uniform(10.0, 20.0)
+                logger.info(f"  long pause {sleep_sec:.1f}s (5% chance, 仿真阅读)")
+            else:
+                sleep_sec = self.page_sleep_seconds + random.uniform(0, 3.0)
+                logger.info(f"  sleep {sleep_sec:.1f}s between pages")
             time.sleep(sleep_sec)
 
         self.dp.listen.stop()
@@ -341,7 +523,8 @@ class DrissionSpider:
         title = clean_title(ware.get("wareName", ""))
         ori_price = ware.get("wareBuried", {}).get("ori_price")
         final_price = ware.get("finalPrice", {}).get("estimatedPrice")
-        total_sales = ware.get("totalSales", 0)
+        total_sales_raw = ware.get("totalSales", 0)
+        total_sales = parse_total_sales(total_sales_raw)
         shop_name = ware.get("shopName", "")
         sku_id = str(ware.get("skuId", ""))
 
@@ -359,9 +542,10 @@ class DrissionSpider:
             # 价格字段（spec §4.1 - sku_detail）
             "price": float(final_price) if final_price else None,
             "ori_price": float(ori_price) if ori_price else None,
-            # spec §2 简化版：销量直接来自 totalSales
-            "cumu_review_count": int(total_sales),  # 字段名沿用，语义变为"销量"
-            "total_sales": int(total_sales),
+            # spec §2 简化版：销量直接来自 totalSales（支持 '100万+' / '5000+' 格式）
+            "cumu_review_count": total_sales,  # 字段名沿用，语义变为"销量"
+            "total_sales": total_sales,
+            "total_sales_raw": str(total_sales_raw),
             # 评论字段（不再抓，留空）
             "good_count": 0,
             "general_count": 0,
@@ -442,6 +626,20 @@ def main():
         help="启动浏览器后人工登录京东账号（cookies 持久化到 user_data_path）",
     )
     parser.add_argument(
+        "--auto-login", action="store_true",
+        help="用 --login-phone + --login-password 自动登录京东",
+    )
+    parser.add_argument(
+        "--login-phone",
+        default=os.environ.get("JD_LOGIN_PHONE", ""),
+        help="京东登录手机号（也可通过 JD_LOGIN_PHONE 环境变量提供）",
+    )
+    parser.add_argument(
+        "--login-password",
+        default=os.environ.get("JD_LOGIN_PASSWORD", ""),
+        help="京东登录密码（也可通过 JD_LOGIN_PASSWORD 环境变量提供）",
+    )
+    parser.add_argument(
         "--login-wait", type=int, default=120,
         help="人工登录等待秒数（默认 120s，仅 --manual-login 时生效）",
     )
@@ -465,6 +663,9 @@ def main():
         headless=args.headless,
         page_sleep_seconds=args.page_sleep,
         manual_login=args.manual_login,
+        auto_login=args.auto_login,
+        login_phone=args.login_phone,
+        login_password=args.login_password,
         login_wait_seconds=args.login_wait,
         user_data_path=args.user_data_path,
     )

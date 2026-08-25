@@ -17,18 +17,23 @@ logger = logging.getLogger(__name__)
 
 
 def aggregate_top30(batch_id: str, month: str) -> None:
-    """为指定批次所有品类生成 Top30 双榜"""
+    """为指定批次所有品类生成 Top30 双榜
+
+    spec §2 修订后：
+    - volume = cumu_review_count (语义变为 total_sales，京东接口直出)
+    - value = volume × price_sampled (销售额估算)
+    """
     engine = create_engine(DATABASE_URL)
 
     with engine.connect() as conn:
-        # 取该批次所有品类的 SPU delta
+        # 取该批次所有品类的 SPU 销量 + 价格（spec §2 简化版）
         stmt = (
             select(
                 SpuMaster.category,
                 SpuMaster.brand_id,
                 SpuMaster.brand_name_normalized,
-                MonthlyDelta.delta,
-                MonthlyDelta.sales_value_proxy,
+                MonthlyDelta.cumu_review_count,  # 语义 = total_sales
+                MonthlyDelta.price_sampled,
             )
             .join(SpuMaster, MonthlyDelta.spu_id == SpuMaster.spu_id)
             .where(MonthlyDelta.batch_id == batch_id)
@@ -43,9 +48,12 @@ def aggregate_top30(batch_id: str, month: str) -> None:
     for row in rows:
         cat = row.category
         brand_id = row.brand_id
-        delta = max(row.delta or 0, 0)  # 负值不算（spec §2.5）
-        by_category[cat][brand_id]["volume"] += delta
-        by_category[cat][brand_id]["value"] += row.sales_value_proxy or 0.0
+        # cumu_review_count 语义为 total_sales，直接累加
+        volume = max(row.cumu_review_count or 0, 0)
+        price = row.price_sampled or 0.0
+        value = volume * price  # 销售额估算
+        by_category[cat][brand_id]["volume"] += volume
+        by_category[cat][brand_id]["value"] += value
         by_category[cat][brand_id]["name"] = row.brand_name_normalized or brand_id
 
     # 各品类双榜各取前 30
