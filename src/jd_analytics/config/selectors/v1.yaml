@@ -1,0 +1,51 @@
+# 选择器 v1 配置（spec §12）
+# 京东页面结构 selector，用于提取商品标题/品牌/评价数等
+# 月度真实冒烟测试 + 改版切换
+
+version: v1
+effective_from: 2026-09-01
+created_by: 郭嘉/奉孝
+
+selectors:
+  item_page:
+    # 商品详情页
+    title: 'css:.sku-name::text'
+    brand: 'css:.crumb a:nth-child(2)::text'
+    cumu_review_count: 'css:.comment-count::text'           # 累计评价数
+    price: 'css:.price-tag span::text'
+    spu_id: 'css:[data-spu]::attr(data-spu)'
+    cid: 'css:[data-cid]::attr(data-cid)'
+
+  list_page:
+    # 列表页
+    spu_ids: 'css:.gl-item .p-img a::attr(data-spu)'
+    next_page: 'css:.pn-next::attr(href)'
+
+  search_page:
+    # 搜索页（用于品类 cid 自动发现，spec §5.1 阶段 B）
+    spu_ids: 'css:.gl-item .p-img a::attr(data-spu)'
+    cid_aggregate: 'css:.gl-item::attr(data-cid)'
+
+  ranking_page:
+    # 排行榜页（/phb/）
+    items: 'css:.J-goods-list .gl-item'
+    rank: 'css:.rank::text'
+    spu_id: 'css:.p-img a::attr(data-spu)'
+
+# 备用选择器（主选择器失效时切换）
+fallback:
+  item_page:
+    title: 'xpath://div[contains(@class,"sku-name")]/text()'
+    brand: 'xpath://div[@class="crumb"]/a[2]/text()'
+
+# 月度真实冒烟（spec §12.2）
+smoke_test:
+  sample_count: 10
+  schedule: monthly                  # 每月正式抓取前跑
+  failure_threshold: 2              # 失败 2+ 触发切换到 fallback
+
+# 改版切换（spec §12.3）
+version_switch:
+  auto_switch_on_failure: true
+  alert_on_switch: true
+  test_duration: 7d                  # 新版本测试 7 天后正式启用

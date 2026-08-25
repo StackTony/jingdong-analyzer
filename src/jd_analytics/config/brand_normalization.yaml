@@ -1,0 +1,43 @@
+# 品牌标准化配置（spec §6.2）
+# Q2 拍板：同品牌多店铺合并
+
+version: v1
+effective_from: 2026-09-01
+
+# 标准化规则
+normalization_rules:
+  - field: brand_name_raw
+    transforms:
+      - remove_parentheses: true         # 花王(中国) → 花王
+      - remove_suffix:                  # 去店铺后缀
+          - 官方旗舰店
+          - 旗舰店
+          - 官方店
+          - 店
+      - unify_case: first_capital        # KAO → Kao
+      - alias_mapping:                   # 别名归一
+          Kao: 花王
+          P&G: 宝洁
+          Procter: 宝洁
+          Procter & Gamble: 宝洁
+
+# 旗舰店关联映射（同品牌多店铺合并 → Q2）
+store_to_brand_mapping:
+  - brand_id: kao_id_001
+    normalized_name: 花王
+    stores:
+      - 花王官方旗舰店
+      - 花王(中国)旗舰店
+      - KAO海外旗舰店
+    merge_strategy: sum                 # 销量/销售额聚合为 sum
+
+  # 其他品牌待首月抓取后补全
+
+# 品牌名 → brand_id 兜底（找不到 brand_id 时用规范化品牌名）
+fallback_by_name: true
+
+# Top30 边界规则（spec §6.4）
+top30_boundary:
+  tie_breaker: brand_id_alphabetical    # 同销量/同销售额按 brand_id 字典序
+  allow_more_than_30: true              # 第 30 名并列全部保留
+  allow_less_than_30: true              # 不足 30 全保留

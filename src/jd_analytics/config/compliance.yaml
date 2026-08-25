@@ -1,0 +1,55 @@
+# 合规边界配置（spec §1.3）
+# 路径白名单 + QPS 上限 + 用户协议合规 + PII 脱敏
+
+version: v1
+effective_from: 2026-09-01
+
+# 路径白名单（合规边界）
+allowed_paths:
+  - /phb/         # 排行榜页
+  - /hotitem/     # 热销商品
+  - /item/        # 商品详情页
+  - /search/      # 搜索页（用于品类 cid 发现）
+
+forbidden_paths:
+  - /pinpai/      # robots.txt 禁止
+  - /user/        # 用户主页（PII）
+  - /product/     # 内部 API
+
+# QPS 上限
+qps_limits:
+  global: 5                          # 全局 QPS 上限
+  per_ip: 1                          # 单 IP QPS 上限（试爬后校准）
+  per_category_per_day: 5000         # 单品类日请求上限
+
+# PII 脱敏规则（spec §1.4）
+pii_redaction:
+  drop_fields:
+    - comment_user_nickname
+    - comment_user_avatar
+    - comment_user_id
+    - qna_user_name
+    - store_contact_info
+  transforms:
+    comment_content:
+      type: truncate
+      max_length: 200
+    comment_content_summary:
+      type: sentiment_analysis
+      values: [positive, negative, neutral]
+
+# 红线
+red_lines:
+  - no_captcha_bypass              # 不绕过验证码
+  - no_technical_measure_breaking  # 不破坏反爬技术措施
+  - no_personal_data_collection    # 不抓个人数据
+  - no_unauthorized_commercial_use # 商业用途必须授权函
+
+# 客户授权
+authorization:
+  required: true
+  status: pending                   # pending / received
+  file_path: docs/authorization.txt
+  scope: ["11 品类商品页", "公开评价数据"]
+  commercial_use: true
+  liability: "客户承担数据采集合规风险"

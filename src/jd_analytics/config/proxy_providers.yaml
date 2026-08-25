@@ -1,0 +1,55 @@
+# 代理池配置（spec §3.2 网络层）
+# 多服务商轮换 + IP 健康检查 + 评分 + 地域分散
+# 预算：月费 300-800 元，建议至少 2 家服务商
+
+version: v1
+
+providers:
+  # 主：住宅代理（不易被识别为爬虫）
+  - name: kuaidaili
+    type: residential
+    api_endpoint: http://localhost:3000/proxy/kuaidaili  # 本地代理 API
+    api_key: ${PROVIDER_KUAIDAILI_KEY}
+    daily_quota: 5000
+    cost_per_month: 200
+
+  - name: zhima
+    type: residential
+    api_endpoint: http://localhost:3000/proxy/zhima
+    api_key: ${PROVIDER_ZHIMA_KEY}
+    daily_quota: 5000
+    cost_per_month: 300
+
+  # 备：数据中心代理（便宜兜底）
+  - name: backup_datacenter
+    type: datacenter
+    api_endpoint: http://localhost:3000/proxy/dc
+    daily_quota: 10000
+    cost_per_month: 100
+
+# IP 健康检查
+health_check:
+  enabled: true
+  interval: 1h                       # 每小时跑一次
+  target_url: "https://www.jd.com/?1"   # 不计流量的健康检查 URL
+  success_threshold: 0.95            # 健康成功率阈值
+
+# IP 评分算法
+scoring:
+  weights:
+    success_rate: 0.5
+    latency: 0.3                     # 越快越好
+    ban_count: 0.2                   # 越少越好
+  dead_threshold: 3                  # 连续失败 3 次剔除
+  revive_after: 24h                  # 24h 后允许复活（避免误杀）
+
+# 地域分散
+geo_distribution:
+  enabled: true
+  preferred_regions:
+    - beijing
+    - shanghai
+    - guangzhou
+    - shenzhen
+    - hangzhou
+  avoid_same_asn: true               # 避免同 ASN 集中

@@ -1,0 +1,87 @@
+# 11 品类映射配置（spec §5）
+# 客户口径 → 京东叶子类目 cid 映射
+# Q1 拍板：棉柔巾/绵柔巾算 1 个品类
+
+version: v1
+effective_from: 2026-09-01
+
+# 阶段 B（自动发现）输出 + 阶段 A（人工筛选）结果
+# 筛选规则：占比 < 80% 的 cid 直接剔除
+
+categories:
+  - name: 成人护理
+    aliases: [成人纸尿裤, 成人拉拉裤, 成人纸尿片]
+    cids: []                          # 待阶段 B 填入
+    filter_reason: ""
+    precision_confirmed: false        # 待客户确认
+
+  - name: 婴童乳霜纸
+    aliases: [乳霜纸, 婴儿乳霜纸]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 棉柔巾·绵柔巾                  # Q1 拍板：算 1 个品类
+    aliases: [棉柔巾, 绵柔巾]
+    cids: []
+    filter_reason: |
+      客户口径：棉柔巾/绵柔巾算 1 个品类
+      待阶段 B 自动发现 cid 后筛选
+    precision_confirmed: true
+
+  - name: 婴童纸尿裤
+    aliases: [婴儿纸尿裤, 纸尿裤]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 婴童拉拉裤
+    aliases: [拉拉裤, 学步裤, 成长裤]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 婴童湿巾
+    aliases: [婴儿湿巾, 婴儿手口湿巾]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 卫生巾
+    aliases: [经期卫生巾, 月经垫]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 卫生护垫
+    aliases: [护垫, 日常护垫]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 裤型卫生巾
+    aliases: [安心裤, 经期裤]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 湿厕纸
+    aliases: [厕湿巾, 可冲散湿巾]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+  - name: 湿巾
+    aliases: [手口湿巾, 便携湿巾]
+    cids: []
+    filter_reason: ""
+    precision_confirmed: false
+
+# 阶段 B 候选 cid（待阶段 A 人工审核）
+pending_cids: {}
+
+# cid 重发现机制（每季度跑一次 B 阶段）
+rediscovery:
+  schedule: quarterly
+  last_run: null
+  next_run: 2026-12-01
