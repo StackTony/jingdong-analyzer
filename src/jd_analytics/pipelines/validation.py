@@ -1,34 +1,26 @@
 """
-数据校验 Pipeline（spec §7.1）
+数据校验 Pipeline（spec §7.1 极简版）
 
-pandera schema 校验每条记录。
+不用 pandera，直接 dict 校验。
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-import pandera as pa
-from pandera import Column, DataFrameSchema, Check
+from scrapy.exceptions import DropItem
 
 logger = logging.getLogger(__name__)
 
 
-# 单条 schema（spec §7.1）
-item_schema = DataFrameSchema({
-    "spu_id": Column(str, nullable=False),
-    "batch_id": Column(str, nullable=False),
-    "title": Column(str, nullable=True),
-    "brand_name_raw": Column(str, nullable=True),
-    "cumu_review_count": Column(int, nullable=True, checks=Check.ge(0)),
-    "price": Column(float, nullable=True, checks=Check.ge(0)),
-    "url": Column(str, nullable=False),
-    "fetched_at": Column(float, nullable=True),
-})
+# 必填字段
+REQUIRED_FIELDS = ["spu_id", "batch_id", "category", "url"]
+# 数值字段必须 >= 0
+NUMERIC_NON_NEG = ["cumu_review_count", "good_count", "general_count", "poor_count", "show_count", "price"]
 
 
 class ValidationPipeline:
-    """pandera 单条校验"""
+    """轻量数据校验"""
 
     def __init__(self):
         self.rejected_count = 0
@@ -38,23 +30,17 @@ class ValidationPipeline:
         return cls()
 
     def process_item(self, item: dict[str, Any], spider):
-        try:
-            # 单条 → 单行 DataFrame 校验
-            import pandas as pd
-            df = pd.DataFrame([item])
-            item_schema.validate(df, lazy=True)
-        except pa.errors.SchemaErrors as e:
-            self.rejected_count += 1
-            logger.warning(
-                f"Validation failed for {item.get('spu_id', 'unknown')}: "
-                f"{e.failure_cases.head()}"
-            )
-            # 失败记录进 retry_queue（spec §8.3）
-            from jd_analytics.pipelines.retry import enqueue_retry
-            enqueue_retry(item["url"], item.get("batch_id"), "validation_failed")
-            raise DropItem(f"Validation failed for {item.get('spu_id')}")
+        # 必填字段
+        for field in REQUIRED_FIELDS:
+            if not item.get(field):
+                self.rejected_count += 1
+                raise DropItem(f"Missing required field {field}")
+
+        # 数值非负
+        for field in NUMERIC_NON_NEG:
+            val = item.get(field)
+            if val is not None and val < 0:
+                self.rejected_count += 1
+                raise DropItem(f"Negative value for {field}: {val}")
 
         return item
-
-
-from scrapy.exceptions import DropItem  # noqa: E402

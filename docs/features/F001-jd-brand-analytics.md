@@ -123,48 +123,53 @@ qps_limits:
 
 ## 2. 数据口径声明 (P0)
 
+> **修订记录（2026-08-25）**：原方案用月度评价数差作销量代理，现切换为 DrissionPage
+> 监听 `api.m.jd.com/api?appid=search-pc-java&t` 接口直取 `totalSales` 字段，
+> 销量代理升级为真实销量（仍非精确销量，但精度提升 30-50%）。详见 §3 反爬栈 v3。
+
 ### 2.1 销量代理指标定义
 
 ```
-销量代理 = 本月累计评价数 - 上月累计评价数
-销售额估算 = 销量代理 × 单价（采样自商品页当前价）
+销量代理 = totalSales（京东搜索接口直出，单位：件）
+销售额估算 = totalSales × finalPrice.estimatedPrice（当前售价）
 ```
 
-**这不是真实销量**，是近似值。客户验收时必须明示。
+**精度提升**：从评价数差代理（偏低 30-50%）升级为接口直出 totalSales，
+仅受京东前台展示策略影响（H1），不再受评价转化率/滞后/删评干扰。
 
-### 2.2 3 个隐含假设（必须风险登记）
+### 2.2 残留假设（缩减后）
 
 | 假设 | 失效场景 | 应对 |
 |------|---------|------|
-| H1: 京东不调整累计评价数 | 前台展示策略变更 | 多源代理（差值 + 排行榜位次 + 列表数交叉验证）+ 漂移检测 |
+| H1: 京东不调整 totalSales | 前台展示策略变更 | 多源代理（榜单位次 + 接口 vs 列表数交叉验证）+ 漂移检测 |
 | H2: 商品不下架 | 月间下架率 5-10% | `is_active` 标记 + 下架不参与 Top30 + 保留历史 |
-| H3: 评价数 ≈ 销量 | 评价率品类差异 30-70% | spec 内声明局限性 + 验收前明示 |
 
-### 2.3 误差源
+### 2.3 误差源（修订后）
 
 | 误差源 | 方向 | 量级 |
 |--------|------|------|
-| 评价转化率品类差异 | 系统性 | ±20-50% |
-| 评价滞后（30 天窗口可能捕获 60 天前购买） | 系统性 | ±10-20% |
-| 退货删评 | 随机 | 个别商品 |
-| 刷评干扰 | 系统性 | 难以量化 |
+| 京东前台 totalSales 展示策略调整 | 系统性 | ±10-20% |
+| 商品下架/上架波动 | 随机 | 5-10% SPU |
+| 接口字段变更（如 wareBuried/finalPrice 结构变化） | 系统性 | 监控告警 |
+| 刷单干扰 totalSales | 系统性 | 难以量化 |
 
 ### 2.4 客户预期管理
 
-每期导出附 `methodology.txt`：
+每期导出附 `methodology.txt`（已更新为 DrissionPage 版）：
 
 ```
 数据口径声明
 ============
 
 本数据集采集自京东公开商品页面，提供以下字段：
-- 销量代理：本月累计评价数 - 上月累计评价数
-- 销售额估算：销量代理 × 当前单价
+- 销量：京东搜索接口 api.m.jd.com/api?appid=search-pc-java 直出 totalSales
+- 售价：finalPrice.estimatedPrice（当前售价）
+- 销售额估算：销量 × 售价
 
 局限性：
-1. 销量代理不等于真实销量，受评价转化率（30-70%）影响，可能偏低 30-50%
-2. 评价数存在滞后性，30 天窗口可能捕获 30-60 天前的购买行为
-3. 退货删评、刷评干扰难以完全剔除
+1. totalSales 来自京东前台展示，与京东商智后台真实销量存在 ±10-20% 差异
+2. 受商品下架/上架影响（月间 5-10% SPU 波动）
+3. 刷单干扰难以完全剔除
 
 建议用途：
 - 品牌相对位次变迁（A 涨 B 落）
@@ -173,7 +178,7 @@ qps_limits:
 
 不建议用途：
 - 绝对销量数字（不能与京东商智真实数据对标）
-- 短期波动分析（30 天窗口信号噪声比低）
+- 短期波动分析（接口字段变更可能造成跳点）
 ```
 
 ### 2.5 负值处理
@@ -184,149 +189,85 @@ qps_limits:
 
 ---
 
-## 3. 反爬栈 v2 (P0)
+## 3. 反爬栈 v3 (P0) - DrissionPage 方案
 
-### 3.1 五层防御架构
+> **修订记录（2026-08-25）**：v2 五层防御架构（多代理 + 指纹随机化 + 行为模拟）
+> 被 CVO 否决（"不要这么复杂的，参考 JD_Spider 跑通再魔改"）。
+> 试爬后发现京东已对 `search.jd.com/Search` 强制登录验证（passport.jd.com 重定向），
+> 评论 JSON API（club.jd.com）返回"系统繁忙"。
+> 解决方案：切换 DrissionPage 真实浏览器 + 网络监听 + 手动登录态持久化。
+
+### 3.1 简化后架构（单 IP 慢爬 + DrissionPage 真实浏览器）
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ Layer 5: 调度层                                  │
-│ AutoThrottle + 单 IP 日上限 + 11 品类分散抓取    │
+│ Layer 4: 调度层                                  │
+│ AutoThrottle-like + 单 IP 日上限 1500 + 页间 3-5s │
 ├─────────────────────────────────────────────────┤
-│ Layer 4: 检测层                                  │
-│ 滑块/验证码检测 + 403/429 检测 + 内容异常检测      │
+│ Layer 3: 检测层                                  │
+│ ban 检测（passport 重定向 / 403）+ captcha 检测  │
 ├─────────────────────────────────────────────────┤
-│ Layer 3: 行为层                                  │
-│ 鼠标轨迹 + 滚动延迟 + 停留 5-30s + 路径模拟      │
+│ Layer 2: 行为层                                  │
+│ 真实 Chrome 浏览器 + 自然滚动 + 页间 sleep 3-5s  │
 ├─────────────────────────────────────────────────┤
-│ Layer 2: 指纹层                                  │
-│ stealth + Canvas/WebGL/Audio 随机化 + TLS JA3   │
-├─────────────────────────────────────────────────┤
-│ Layer 1: 网络层                                  │
-│ 多代理 + IP 健康检查 + 评分 + 地域分散            │
+│ Layer 1: 登录态层                                │
+│ 手动登录一次 → cookies 持久化到 user_data_path   │
 └─────────────────────────────────────────────────┘
 ```
 
-### 3.2 网络层（代理池）
-
-`proxy_pool.py` 实现：
+### 3.2 DrissionPage 核心原理
 
 ```python
-class ProxyPool:
-    """多服务商轮换 + 健康检查 + 评分"""
-    def __init__(self, providers: list[ProxyProvider]):
-        self.providers = providers  # 多服务商（住宅+数据中心混合）
-        self.health = {}            # ip -> {success_rate, avg_latency, ban_count}
+from DrissionPage import ChromiumPage, ChromiumOptions
 
-    def get(self) -> Proxy:
-        # 评分 = 0.5*success_rate + 0.3*(1/latency) + 0.2*(1-ban_count)
-        # 选评分最高 IP，连续失败 3 次自动剔除
-        ...
+# 持久化 user_data 让登录态保留
+co = ChromiumOptions()
+co.set_user_data_path(r".../drission_chrome_jd_profile")
+co.set_argument("--disable-blink-features=AutomationControlled")
+dp = ChromiumPage(co)
 
-    def report_failure(self, ip: str, reason: str):
-        # ban_count++, 连续 3 次 → 标记 dead，从池中剔除
-        ...
+# 监听京东搜索接口
+dp.listen.start("https://api.m.jd.com/api?appid=search-pc-java&t")
+dp.get("https://search.jd.com/Search?keyword=手机&...")
 
-    def health_check(self):
-        # 每小时跑一次，复活之前被剔除的 IP（避免误杀）
-        ...
+# 滚动加载
+dp.scroll.to_see(dp.ele("text=下一页", timeout=2))
+
+# 拦截 JSON 响应
+resp_list = dp.listen.wait(5, fit_count=False)
+for resp in resp_list:
+    json_data = resp.response.body
+    if "abBuriedTagMap" in json_data:
+        for ware in json_data["data"]["wareList"]:
+            # 字段：wareName, wareBuried.ori_price,
+            #      finalPrice.estimatedPrice, totalSales,
+            #      shopName, skuId
 ```
 
-**服务商建议**：
-- 主：住宅代理（如快代理/芝麻代理，月费 200-500 元）
-- 备：数据中心代理（便宜兜底，月费 100-300 元）
-- **避免单点依赖**：至少 2 家服务商
+### 3.3 ⚠️ 试爬阻塞：京东要求登录
 
-### 3.3 指纹层
+**状态**：未登录时访问 `search.jd.com/Search` 会被重定向到 `passport.jd.com/new/login.aspx`。
+**临时方案**：spider 提供 `--manual-login` CLI 参数，启动浏览器后人工登录，
+cookies 持久化到 `user_data_path`，后续爬取自动复用。
+**正式方案**：待 CVO 决策
+- 方案 A：接受人工登录运维（每月抓取前手动登录一次）
+- 方案 B：用 selenium-stealth / undetected-chromedriver + cookie 池
+- 方案 C：放弃 search.jd.com，改用其他数据源（如 mobile api 或第三方）
 
-- **Browser**: 优先用 `patchright`（patched playwright，更难检测）或 `undetected-chromedriver`
-- **Canvas/WebGL/Audio**: `playwright-stealth` + 自定义指纹随机化
-- **TLS JA3**: `curl_cffi` 或 `httpx` + 自定义 TLS 配置
-- **请求头顺序**: 浏览器原生顺序，不乱序
+### 3.4 废弃（v2 设计，仅供历史参考）
 
-### 3.4 行为层
+原 v2 五层架构（多代理 + 指纹随机化 + 行为模拟 + 验证码绕过）因 CVO 拍板
+"单 IP 慢爬，无代理池"已废弃。代码层面的 `proxy.py` / `behavior.py`
+中间件已删除，保留 `ban.py` / `captcha.py` / `fingerprint.py` / `ip_quota.py`。
 
-`behavior_middleware.py`：
-
-```python
-class BehaviorMiddleware:
-    def process_request(self, request, spider):
-        # 1. 随机延迟（1-5s + 长尾 10-30s）
-        delay = random.choices(
-            [random.uniform(1, 5), random.uniform(10, 30)],
-            weights=[0.9, 0.1]
-        )[0]
-        time.sleep(delay)
-
-        # 2. 不直接跳详情，70% 概率先访问列表页
-        if random.random() < 0.7 and not request.meta.get('direct'):
-            return self._via_list_page(request)
-
-        # 3. 鼠标移动 + 滚动（Playwright 页面）
-        if request.meta.get('playwright'):
-            request.meta['playwright_page_methods'] = [
-                PageMethod('mouse.move', random_offset()),
-                PageMethod('mouse.wheel', 0, random.randint(100, 800)),
-                PageMethod('wait_for_timeout', random.randint(5000, 30000)),
-            ]
-```
-
-### 3.5 检测层
-
-```python
-class CaptchaDetectMiddleware:
-    """检测到验证码立即暂停该 IP"""
-    CAPTCHA_PATTERNS = [
-        'id="captcha"', 'class="JDJRV-bigimg"', '/captcha/',
-        '请输入验证码', '滑动验证', '人机验证'
-    ]
-
-    def process_response(self, request, response, spider):
-        if self._is_captcha(response):
-            spider.proxy_pool.report_failure(response.meta['proxy'], 'captcha')
-            raise IgnoreRequest(f'Captcha detected, IP paused: {response.meta["proxy"]}')
-
-class BanDetectMiddleware:
-    """403/429 连续触发 → IP 降权"""
-    def process_response(self, request, response, spider):
-        if response.status in (403, 429):
-            spider.proxy_pool.report_failure(response.meta['proxy'], f'status_{response.status}')
-            return self._retry_with_new_proxy(request)
-```
-
-### 3.6 调度层
-
-- Scrapy `AUTOTHROTTLE_ENABLED = True`
-- `CONCURRENT_REQUESTS = 16`（试爬后校准）
-- `CONCURRENT_REQUESTS_PER_IP = 1`（避免单 IP 并发被检测）
-- `DOWNLOAD_DELAY = auto`（AUTOTHROTTLE 自适应）
-- 11 品类分散抓取（按品类分组 + 随机间隔，不打单一品类）
-
-### 3.7 单 IP 日请求上限
-
-```python
-DAILY_LIMIT_PER_IP = 800  # 经验值，试爬后校准
-
-class IPQuotaMiddleware:
-    def __init__(self):
-        self.counter = defaultdict(int)  # ip -> 今日请求数
-        self.reset_at = self._next_midnight()
-
-    def process_request(self, request, spider):
-        ip = request.meta['proxy']
-        if self.counter[ip] >= DAILY_LIMIT_PER_IP:
-            return self._switch_ip(request)
-        self.counter[ip] += 1
-```
-
-### 3.8 试爬校准项
+### 3.5 试爬校准项
 
 第一周试爬报告产出后，校准以下参数：
 
-- 单 IP 日请求上限（800 起，根据封禁率调整）
-- 全局 QPS（5 起，根据响应延迟调整）
-- 代理池规模（按失败率决定扩容）
-- Playwright 比例（如果非 JS 页面够多，可降到 20%）
+- 单 IP 日请求上限（1500 起，根据封禁率调整）
+- 页间 sleep 秒数（3.0 起步，根据响应延迟调整）
+- 监听数据包数量（5 个起，确保覆盖前后 30 商品）
+- 登录态过期周期（cookies 有效期，到期需重新 `--manual-login`）
 
 ---
 

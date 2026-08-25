@@ -1,5 +1,5 @@
 """
-失败重试 Pipeline + retry_queue 队列辅助函数（spec §8.3）
+失败重试 Pipeline + retry_queue 队列辅助函数（spec §8.3 极简版）
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, select
 from jd_analytics.models import RetryQueue
-from jd_analytics.settings import DATABASE_URL, RETRY_PRIORITY_MAP
+from jd_analytics.settings import DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -23,55 +23,54 @@ def enqueue_retry(url: str, batch_id: str | None, reason: str) -> None:
     engine = create_engine(DATABASE_URL)
     now = datetime.now(timezone.utc)
 
-    with engine.begin() as conn:
-        existing = conn.execute(
-            select(RetryQueue).where(RetryQueue.url == url)
-        ).first()
+    try:
+        with engine.begin() as conn:
+            existing = conn.execute(
+                select(RetryQueue).where(RetryQueue.url == url)
+            ).first()
 
-        if existing:
-            # 重试次数 +1，next_retry_at 推迟
-            new_count = existing.retry_count + 1
-            interval_idx = min(new_count - 1, len(RETRY_INTERVALS) - 1)
-            next_at = now + RETRY_INTERVALS[interval_idx]
+            if existing:
+                new_count = (existing.retry_count or 0) + 1
+                interval_idx = min(new_count - 1, len(RETRY_INTERVALS) - 1)
+                next_at = now + RETRY_INTERVALS[interval_idx]
 
-            if new_count > 3:
-                # 超过 3 次 → permanent_failure，进 batch_report（spec §8.3）
-                logger.error(f"Permanent failure: {url} after 3 retries (last: {reason})")
-                # 标记为永久失败（priority=-1）
-                conn.execute(
-                    RetryQueue.__table__.update()
-                    .where(RetryQueue.url == url)
-                    .values(
-                        retry_count=new_count,
-                        last_error=reason,
-                        next_retry_at=next_at.isoformat(),
-                        priority=-1,
+                if new_count > 3:
+                    logger.error(
+                        f"Permanent failure: {url} after 3 retries (last: {reason})"
                     )
-                )
+                    conn.execute(
+                        RetryQueue.__table__.update()
+                        .where(RetryQueue.url == url)
+                        .values(
+                            retry_count=new_count,
+                            last_error=reason,
+                            next_retry_at=next_at.isoformat(),
+                            priority=-1,
+                        )
+                    )
+                else:
+                    conn.execute(
+                        RetryQueue.__table__.update()
+                        .where(RetryQueue.url == url)
+                        .values(
+                            retry_count=new_count,
+                            last_error=reason,
+                            next_retry_at=next_at.isoformat(),
+                        )
+                    )
             else:
+                next_at = now + RETRY_INTERVALS[0]
                 conn.execute(
-                    RetryQueue.__table__.update()
-                    .where(RetryQueue.url == url)
-                    .values(
-                        retry_count=new_count,
+                    RetryQueue.__table__.insert().values(
+                        url=url,
+                        batch_id=batch_id or "unknown",
+                        retry_count=1,
                         last_error=reason,
                         next_retry_at=next_at.isoformat(),
-                        priority=RETRY_PRIORITY_MAP.get(reason, 3),
                     )
                 )
-        else:
-            # 新失败
-            next_at = now + RETRY_INTERVALS[0]
-            conn.execute(
-                RetryQueue.__table__.insert().values(
-                    url=url,
-                    batch_id=batch_id or "unknown",
-                    retry_count=1,
-                    last_error=reason,
-                    next_retry_at=next_at.isoformat(),
-                    priority=RETRY_PRIORITY_MAP.get(reason, 3),
-                )
-            )
+    except Exception as e:
+        logger.error(f"Failed to enqueue retry for {url}: {e}")
 
 
 class RetryPipeline:
@@ -82,5 +81,4 @@ class RetryPipeline:
         return cls()
 
     def process_item(self, item: dict[str, Any], spider):
-        # 正常 item 不进 retry_queue
         return item

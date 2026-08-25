@@ -1,40 +1,63 @@
 """
-反爬栈 Layer 4: 检测层 - 403/429 ban 检测（spec §3.5）
+403/429 ban 检测中间件（spec §3.5 极简版）
 
-连续 403/429 → IP 降权 + 换 IP 重试。
+单 IP 模式下被 ban → 写入 retry_queue + 退避重试
 """
 from __future__ import annotations
 
 import logging
+import random
+import time
 
 from scrapy.downloadermiddlewares.retry import RetryMiddleware
-from scrapy.exceptions import StopDownload
+from scrapy.exceptions import IgnoreRequest
 from scrapy.http import Request
 
 logger = logging.getLogger(__name__)
 
 
 class BanDetectMiddleware(RetryMiddleware):
-    """403/429 检测 + 换 IP 重试"""
+    """403/429 检测 + 退避重试"""
 
     def process_response(self, request, response, spider):
         if response.status in (403, 429):
-            proxy_obj = request.meta.get("proxy_obj")
-            ip = proxy_obj.ip if proxy_obj else "unknown"
-            logger.warning(f"Ban detected: status={response.status} IP={ip}")
+            retries = request.meta.get("retry_times", 0)
+            max_retries = 3
 
-            if proxy_obj and hasattr(spider, "proxy_pool"):
-                spider.proxy_pool.report_failure(proxy_obj.ip, f"http_{response.status}")
+            if retries >= max_retries:
+                logger.error(
+                    f"Max retries ({max_retries}) exceeded for {request.url}"
+                )
+                # 写入 retry_queue（spec §8.3）
+                try:
+                    from jd_analytics.pipelines.retry import enqueue_retry
+                    enqueue_retry(
+                        request.url,
+                        request.meta.get("batch_id"),
+                        f"http_{response.status}",
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to enqueue retry: {e}")
+                raise IgnoreRequest(
+                    f"Max retries exceeded: {request.url} (status {response.status})"
+                )
 
-            # 换 IP 重试（去掉旧 proxy meta，由 ProxyRotationMiddleware 重新分配）
-            new_meta = {k: v for k, v in request.meta.items()
-                       if not k.startswith("proxy")}
-            new_meta["dont_redirect"] = True
+            # 退避重试：1h / 6h / 24h 简化版 = 短期 60-300 秒
+            backoff = random.randint(60, 300) * (retries + 1)
+            logger.warning(
+                f"Ban status={response.status} retry {retries + 1}/{max_retries} "
+                f"for {request.url}, backing off {backoff}s"
+            )
+            time.sleep(backoff)
+
+            new_meta = dict(request.meta)
+            new_meta["retry_times"] = retries + 1
             return Request(
                 url=request.url,
                 meta=new_meta,
                 dont_filter=True,
                 priority=request.priority - 1,
+                callback=request.callback,
             )
 
         return response
