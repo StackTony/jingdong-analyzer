@@ -281,28 +281,39 @@ class OcrSpider(DrissionSpider):
 
         # 上下文通过参数传递（不污染实例状态）
         # 1. 访问搜索页
+        # page==1 用 dp.get()，后续页由 crawl_category 调 _click_next_page() 触发翻页
         url = JD_SEARCH_URL.format(keyword=quote(keyword), page=page)
         if page == 1:
             self.dp.get(url)
-            self.daily_counter += 1
+        self.daily_counter += 1
 
-            # 2. 反爬检测（P0-1 修复：每次 get 后调用）
-            status = self._check_after_page_load(url)
-            if status == "skip":
+        # 2. 反爬检测（P0-1 修复 + 铲屎官要求：每页都检测）
+        # 用 dp.url 取当前真实 URL（点击下一页后 URL 会变）
+        try:
+            current_url = self.dp.url
+        except Exception:
+            current_url = url
+
+        status = self._check_after_page_load(current_url)
+        if status == "skip":
+            logger.warning(
+                f"[{category_name}] page {page} skipped: captcha/ban"
+            )
+            return []
+        if status == "wait_retry":
+            # ban 退避后重试一次
+            logger.info(
+                f"[{category_name}] page {page} retrying after ban backoff"
+            )
+            if page == 1:
+                self.dp.get(url)
+            # 后续页已通过 _click_next_page 触发，不重复 get
+            status2 = self._check_after_page_load(current_url)
+            if status2 != "ok":
                 logger.warning(
-                    f"[{category_name}] page {page} skipped: captcha/ban"
+                    f"[{category_name}] page {page} retry failed: {status2}"
                 )
                 return []
-            if status == "wait_retry":
-                # ban 退避后重试一次
-                logger.info(f"[{category_name}] page {page} retrying after ban backoff")
-                self.dp.get(url)
-                status2 = self._check_after_page_load(url)
-                if status2 != "ok":
-                    logger.warning(
-                        f"[{category_name}] page {page} retry failed: {status2}"
-                    )
-                    return []
 
         # 3. 滚动到页底加载懒加载内容（截图前必须）
         try:
@@ -503,6 +514,15 @@ def main():
         dry_run=args.dry_run,
         screenshot_only=args.screenshot_only,
     )
+
+    # dry-run 模式：不写数据库、不跑 aggregator、不生成报告
+    if args.dry_run:
+        logger.warning("=" * 60)
+        logger.warning("DRY-RUN MODE: 跳过数据库写入 / aggregator / 报告生成")
+        logger.warning("=" * 60)
+        results = spider.run()
+        print(f"Done (dry-run). batch_id={spider.batch_id}, results={results}")
+        return
 
     # 初始化数据库（建表）
     from sqlalchemy import create_engine

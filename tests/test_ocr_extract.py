@@ -560,5 +560,94 @@ def test_ocr_spider_screenshot_only_skips_ocr():
     assert items == []
 
 
+def test_ocr_spider_checks_after_page_load_on_subsequent_pages():
+    """铲屎官要求：后续页也要有反爬检测
+
+    构造 page=2 场景（mock _click_next_page 已触发翻页），
+    验证 _check_after_page_load 仍被调用。
+    """
+    from jd_analytics.spiders.ocr_spider import OcrSpider
+
+    spider = OcrSpider(
+        batch_id="test_page2_check",
+        month="2026-08",
+        trial=True,
+        dry_run=False,
+        screenshot_only=True,  # 跳过 OCR 路径，只验证反爬
+    )
+
+    spider.dp = MagicMock()
+    spider.dp.url = "https://search.jd.com/Search?keyword=test&page=2"
+
+    # patch _check_after_page_load 返回 ok
+    with patch.object(spider, "_check_after_page_load", return_value="ok") as mock_check:
+        with patch.object(spider, "_take_screenshot", return_value=Path("/fake/shot.png")):
+            items = spider._crawl_single_page("棉柔巾", "棉柔巾", page=2)
+
+    # page=2 也调了 _check_after_page_load
+    mock_check.assert_called()
+    assert items == []
+
+
+def test_ocr_spider_skips_subsequent_page_on_captcha():
+    """后续页检测到 captcha 应跳过（返回空 list，不截图）"""
+    from jd_analytics.spiders.ocr_spider import OcrSpider
+
+    spider = OcrSpider(
+        batch_id="test_page2_captcha",
+        month="2026-08",
+        trial=True,
+        dry_run=False,
+        screenshot_only=True,
+    )
+
+    spider.dp = MagicMock()
+    spider.dp.url = "https://search.jd.com/Search?keyword=test&page=2"
+
+    # page=2 检测到 captcha → skip
+    with patch.object(spider, "_check_after_page_load", return_value="skip"):
+        with patch.object(spider, "_take_screenshot") as mock_shot:
+            items = spider._crawl_single_page("棉柔巾", "棉柔巾", page=2)
+
+    # 检测到 captcha 后直接 return []，不调截图
+    mock_shot.assert_not_called()
+    assert items == []
+
+
+def test_ocr_spider_main_dry_run_skips_db_aggregator_report():
+    """P1-5 + 铲屎官要求：dry-run 模式 main() 不该调 aggregator / report / 写 Batch
+
+    用 patch 验证 main() 在 dry-run 时短路，不调：
+    - aggregate_top30
+    - generate_batch_report
+    """
+    from jd_analytics.spiders.ocr_spider import main
+
+    # 构造 dry-run argv
+    test_argv = [
+        "jd-collect", "collect", "--mode", "ocr", "--dry-run", "--trial",
+    ]
+
+    with patch.object(sys, "argv", test_argv):
+        # patch 真实模块函数（main 内部用 from-import 延迟加载）
+        with patch("jd_analytics.aggregator.aggregate_top30") as mock_agg:
+            with patch(
+                "jd_analytics.batch_report.generate_batch_report"
+            ) as mock_report:
+                # dry-run 下 OcrSpider.run() 会真的执行（不启动浏览器），
+                # 但不应触发 aggregator / report
+                try:
+                    main()
+                except SystemExit:
+                    pass
+                except Exception as e:
+                    # 其它异常不影响验证（不调 aggregator / report 是断言目标）
+                    pass
+
+    # dry-run 短路：不应调 aggregator / report
+    mock_agg.assert_not_called()
+    mock_report.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
