@@ -10,6 +10,7 @@ import logging
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +97,6 @@ class ScreenshotGC:
 
     def get_stats(self) -> dict[str, Any]:
         """返回当前截图目录统计（不删除）"""
-        from typing import Any
-
         if not self.screenshot_path.exists():
             return {
                 "total_files": 0,

@@ -172,60 +172,188 @@ class PaddleOCRVLExtractor:
     ) -> list[dict[str, Any]]:
         """把 OCR 文字结果结构化为商品 item 列表
 
-        简化版策略：用正则识别商品卡片
-        - 价格模式：¥XXXX.XX 或 XXXX.XX
-        - SKU ID 模式：item.jd.com/XXXXX 或纯数字 10-13 位
-        - 销量模式：N万+ / N+ / 已有N人评价
+        P1-4 修复（云长 review）：用 box 坐标聚类替代索引配对
 
-        完整版应该按 box 坐标聚类（本期不做，等试爬验证后补）
+        策略：
+        1. 按 box 中心 y 蝶标聚类成行（同 y 附近归一行）
+        2. 行内按 x 坐标聚类成商品卡片
+        3. 每个卡片内：识别价格/SKU/标题/店铺/销量，全部归一个商品
+
+        京东搜索页布局：网格，每行 5 卡片，每卡 ~250x500px
         """
         items: list[dict[str, Any]] = []
-
-        # 收集所有文字
-        all_texts = [t["text"] for t in texts_with_boxes]
-
-        # 用正则提取关键字段
-        prices = []
-        sku_ids = []
-        titles = []
-        shop_names = []
-        sales = []
 
         confidence_threshold = (
             self.config.get("paddleocr_vl", {}).get("confidence_threshold", 0.80)
         )
+        clustering_cfg = self.config.get("clustering", {})
+        row_y_threshold = clustering_cfg.get("row_y_threshold", 60)
+        card_x_threshold = clustering_cfg.get("card_x_threshold", 280)
+        card_min_texts = clustering_cfg.get("card_min_texts", 2)
+        max_items_per_page = clustering_cfg.get("max_items_per_page", 60)
 
+        # 1. 过滤低置信度 + 计算 box 中心点
+        valid_entries: list[dict[str, Any]] = []
         for entry in texts_with_boxes:
+            text = entry.get("text", "").strip()
+            conf = entry.get("confidence", 0)
+            box = entry.get("box")
+
+            if not text or conf < confidence_threshold:
+                continue
+            if not box or len(box) < 2:
+                continue
+
+            # box 格式：[[x1,y1], [x2,y2], [x3,y3], [x4,y4]] 或 [[x,y],[w,h]]
+            try:
+                xs = [pt[0] for pt in box]
+                ys = [pt[1] for pt in box]
+                cx = sum(xs) / len(xs)
+                cy = sum(ys) / len(ys)
+            except (IndexError, TypeError):
+                continue
+
+            valid_entries.append({
+                "text": text,
+                "confidence": conf,
+                "box": box,
+                "cx": cx,
+                "cy": cy,
+            })
+
+        if not valid_entries:
+            logger.warning(f"No valid OCR entries after filtering")
+            return items
+
+        # 2. 按 y 中心聚类成行
+        # 先按 y 排序，然后相邻 y 距离 < threshold 归为一行
+        sorted_by_y = sorted(valid_entries, key=lambda e: e["cy"])
+        rows: list[list[dict[str, Any]]] = []
+        current_row: list[dict[str, Any]] = [sorted_by_y[0]]
+        current_y = sorted_by_y[0]["cy"]
+
+        for entry in sorted_by_y[1:]:
+            if abs(entry["cy"] - current_y) < row_y_threshold:
+                current_row.append(entry)
+                # 更新当前行的 y 均值（更稳定）
+                current_y = sum(e["cy"] for e in current_row) / len(current_row)
+            else:
+                rows.append(current_row)
+                current_row = [entry]
+                current_y = entry["cy"]
+        if current_row:
+            rows.append(current_row)
+
+        # 3. 每行内按 x 聚类成卡片
+        for row_idx, row in enumerate(rows):
+            row_sorted = sorted(row, key=lambda e: e["cx"])
+            cards: list[list[dict[str, Any]]] = []
+            current_card: list[dict[str, Any]] = [row_sorted[0]]
+            current_x = row_sorted[0]["cx"]
+
+            for entry in row_sorted[1:]:
+                if abs(entry["cx"] - current_x) < card_x_threshold:
+                    current_card.append(entry)
+                    current_x = sum(e["cx"] for e in current_card) / len(current_card)
+                else:
+                    cards.append(current_card)
+                    current_card = [entry]
+                    current_x = entry["cx"]
+            if current_card:
+                cards.append(current_card)
+
+            # 4. 每个卡片内提取字段
+            for card_idx, card_entries in enumerate(cards):
+                if len(card_entries) < card_min_texts:
+                    continue
+
+                item = self._build_item_from_card(
+                    card_entries, category_name, keyword,
+                    page, batch_id, month, confidence_threshold,
+                )
+                if item:
+                    items.append(item)
+
+                if len(items) >= max_items_per_page:
+                    logger.info(
+                        f"Reached max_items_per_page ({max_items_per_page}), "
+                        f"stopping"
+                    )
+                    return items
+
+        logger.info(
+            f"OCR clustered {len(items)} items from {len(valid_entries)} text blocks "
+            f"across {len(rows)} rows"
+        )
+        return items
+
+    def _build_item_from_card(
+        self,
+        card_entries: list[dict[str, Any]],
+        category_name: str,
+        keyword: str,
+        page: int,
+        batch_id: str,
+        month: str,
+        confidence_threshold: float,
+    ) -> dict[str, Any] | None:
+        """从单个卡片的文本块提取商品字段
+
+        每个卡片是一个商品，所有文本块按字段类型分类：
+        - 价格：含 ¥ 前缀的数字
+        - SKU ID：10-13 位纯数字 或 item.jd.com/XXX
+        - 销量：N万+ / N+ / 已有N人评价
+        - 店铺名：含 旗舰店/京东自营/专卖店 关键词
+        - 标题：剩余的较长文本
+        """
+        price: float | None = None
+        sku_id: str | None = None
+        title: str = ""
+        shop: str = ""
+        sale = 0
+        low_conf = False
+
+        # 卡片内按 y 从上到下、x 从左到右排序（标题通常在最上面）
+        card_sorted = sorted(card_entries, key=lambda e: (e["cy"], e["cx"]))
+
+        for entry in card_sorted:
             text = entry["text"]
             conf = entry["confidence"]
 
             if conf < confidence_threshold:
-                logger.debug(f"Low confidence text skipped: {text} ({conf})")
-                continue
+                low_conf = True
 
-            # 价格
-            price_match = re.search(r"¥?(\d+(?:\.\d{1,2})?)", text)
-            if price_match and "¥" in text:
-                try:
-                    prices.append(float(price_match.group(1)))
-                except ValueError:
-                    pass
+            # 价格（¥ 前缀，只取第一个匹配的）
+            if price is None:
+                price_match = re.search(r"¥\s*(\d+(?:\.\d{1,2})?)", text)
+                if price_match:
+                    try:
+                        price = float(price_match.group(1))
+                        continue
+                    except ValueError:
+                        pass
 
-            # SKU ID（item.jd.com/123456 或纯 10-13 位数字）
-            sku_match = re.search(r"(?:item\.jd\.com/)?(\d{10,13})", text)
-            if sku_match:
-                sku_ids.append(sku_match.group(1))
+            # SKU ID（10-13 位数字 或 item.jd.com/XXX）
+            if sku_id is None:
+                sku_match = re.search(r"(?:item\.jd\.com/)?(\d{10,13})", text)
+                if sku_match:
+                    sku_id = sku_match.group(1)
+                    continue
 
             # 销量
-            sales_match = self._parse_sales_from_text(text)
-            if sales_match:
-                sales.append(sales_match)
+            if sale == 0:
+                sale = self._parse_sales_from_text(text)
+                if sale > 0:
+                    continue
 
-            # 店铺名（含"旗舰店" / "京东自营"等关键词）
-            if any(kw in text for kw in ["旗舰店", "京东自营", "专卖店", "专营店"]):
-                shop_names.append(text.strip())
+            # 店铺名
+            if not shop and any(
+                kw in text for kw in ["旗舰店", "京东自营", "专卖店", "专营店"]
+            ):
+                shop = text.strip()
+                continue
 
-            # 标题（含商品特征词，较长且非价格/SKU）
+            # 标题：较长且不含特殊字段标识
             if (
                 len(text) > 10
                 and "¥" not in text
@@ -234,54 +362,43 @@ class PaddleOCRVLExtractor:
                 and "已有" not in text
                 and "评价" not in text
             ):
-                titles.append(text.strip())
+                if len(text) > len(title):
+                    title = text.strip()
 
-        # 按"每页约 60 商品"对齐（简化版，不精确配对）
-        # 完整版需要 box 坐标聚类（本期不做）
-        max_items = max(len(prices), len(sku_ids), 1)
+        # 至少要有价格或 SKU 才算有效商品
+        if price is None and sku_id is None:
+            return None
 
-        for i in range(min(max_items, 60)):  # 京东每页约 60 商品
-            price = prices[i] if i < len(prices) else None
-            sku_id = sku_ids[i] if i < len(sku_ids) else f"ocr_unknown_{page}_{i}"
-            title = titles[i] if i < len(titles) else ""
-            shop = shop_names[i] if i < len(shop_names) else ""
-            sale = sales[i] if i < len(sales) else 0
+        # 没找到 SKU 用占位符
+        if sku_id is None:
+            sku_id = f"ocr_unknown_{page}_{category_name}_{hash(title) % 100000}"
 
-            # 至少要有价格或 SKU 才算有效商品
-            if not price and sku_id.startswith("ocr_unknown"):
-                continue
-
-            item = {
-                "spu_id": sku_id,
-                "batch_id": batch_id,
-                "month": month,
-                "category": category_name,
-                "keyword": keyword,
-                "title": title,
-                "brand_name_raw": shop,  # 京东店铺名通常含品牌信息
-                "url": f"https://item.jd.com/{sku_id}.html" if not sku_id.startswith("ocr_unknown") else "",
-                "page": page,
-                "price": price,
-                "ori_price": None,
-                "cumu_review_count": sale,  # 字段名沿用，语义=销量
-                "total_sales": sale,
-                "total_sales_raw": "",
-                "good_count": 0,
-                "general_count": 0,
-                "poor_count": 0,
-                "show_count": 0,
-                "low_confidence": any(
-                    t["confidence"] < confidence_threshold
-                    for t in texts_with_boxes
-                    if t["text"] in [title, shop, str(price)]
-                ),
-            }
-            items.append(item)
-
-        logger.info(
-            f"OCR structured {len(items)} items from {len(texts_with_boxes)} text blocks"
-        )
-        return items
+        item = {
+            "spu_id": sku_id,
+            "batch_id": batch_id,
+            "month": month,
+            "category": category_name,
+            "keyword": keyword,
+            "title": title,
+            "brand_name_raw": shop,
+            "url": (
+                f"https://item.jd.com/{sku_id}.html"
+                if not sku_id.startswith("ocr_unknown")
+                else ""
+            ),
+            "page": page,
+            "price": price,
+            "ori_price": None,
+            "cumu_review_count": sale,
+            "total_sales": sale,
+            "total_sales_raw": "",
+            "good_count": 0,
+            "general_count": 0,
+            "poor_count": 0,
+            "show_count": 0,
+            "low_confidence": low_conf,
+        }
+        return item
 
     def _parse_sales_from_text(self, text: str) -> int:
         """从文字解析销量（'100万+' / '5000+' / '已有 300000 人评价'）"""

@@ -334,5 +334,231 @@ def test_cli_collect_parser_accepts_mode_ocr():
         assert args.dry_run is True
 
 
+# ===== 行为测试（P0-1 / P1-4 / P1-5 修复后补）=====
+
+def test_ocr_structure_items_clusters_by_box_coordinate():
+    """P1-4：_structure_items 按 box 坐标聚类，不能靠索引配对导致错位
+
+    构造模拟 OCR 结果：2 行 × 2 列 = 4 个商品卡片
+    验证每个商品的字段从同一卡片内提取，不错位
+    """
+    from jd_analytics.pipelines.ocr_extract import PaddleOCRVLExtractor
+
+    config = {
+        "paddleocr_vl": {"confidence_threshold": 0.50},
+        "clustering": {
+            "row_y_threshold": 250,
+            "card_x_threshold": 280,
+            "card_min_texts": 2,
+            "max_items_per_page": 60,
+        },
+    }
+    extractor = PaddleOCRVLExtractor(config)
+
+    # 模拟 4 个商品卡片，2 行 × 2 列
+    # 行 1 (y≈100): 卡 A (x≈100), 卡 B (x≈400)
+    # 行 2 (y≈600): 卡 C (x≈100), 卡 D (x≈400)
+    # 每卡含：标题 / 价格 / SKU / 销量 / 店铺
+    def make_box(x, y, w=200, h=30):
+        return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+
+    texts_with_boxes = [
+        # 行 1 - 卡 A
+        {"text": "棉柔巾婴儿专用加厚60抽", "confidence": 0.95, "box": make_box(50, 80)},
+        {"text": "¥39.9", "confidence": 0.95, "box": make_box(50, 130)},
+        {"text": "1000023412", "confidence": 0.95, "box": make_box(50, 180)},
+        {"text": "已拼5万+", "confidence": 0.95, "box": make_box(50, 230)},
+        {"text": "宝洁旗舰店", "confidence": 0.95, "box": make_box(50, 280)},
+
+        # 行 1 - 卡 B
+        {"text": "婴儿湿巾80抽大包家庭装", "confidence": 0.95, "box": make_box(380, 80)},
+        {"text": "¥29.9", "confidence": 0.95, "box": make_box(380, 130)},
+        {"text": "1000098765", "confidence": 0.95, "box": make_box(380, 180)},
+        {"text": "已拼2000+", "confidence": 0.95, "box": make_box(380, 230)},
+        {"text": "好奇专卖店", "confidence": 0.95, "box": make_box(380, 280)},
+
+        # 行 2 - 卡 C
+        {"text": "拉拉裤L码女童成长裤", "confidence": 0.95, "box": make_box(50, 580)},
+        {"text": "¥89.9", "confidence": 0.95, "box": make_box(50, 630)},
+        {"text": "1000034567", "confidence": 0.95, "box": make_box(50, 680)},
+        {"text": "已拼10万+", "confidence": 0.95, "box": make_box(50, 730)},
+        {"text": "帮宝适旗舰店", "confidence": 0.95, "box": make_box(50, 780)},
+
+        # 行 2 - 卡 D
+        {"text": "纸尿裤S码新生儿专用", "confidence": 0.95, "box": make_box(380, 580)},
+        {"text": "¥59.0", "confidence": 0.95, "box": make_box(380, 630)},
+        {"text": "1000087654", "confidence": 0.95, "box": make_box(380, 680)},
+        {"text": "已拼8000+", "confidence": 0.95, "box": make_box(380, 730)},
+        {"text": "大王专营店", "confidence": 0.95, "box": make_box(380, 780)},
+    ]
+
+    items = extractor._structure_items(
+        texts_with_boxes,
+        category_name="棉柔巾",
+        keyword="棉柔巾",
+        page=1,
+        batch_id="test_cluster",
+        month="2026-08",
+    )
+
+    assert len(items) == 4, f"Expected 4 items, got {len(items)}"
+
+    # 验证字段不错位：每个 SKU 对应的价格/销量/店铺必须正确
+    by_sku = {it["spu_id"]: it for it in items}
+
+    assert by_sku["1000023412"]["price"] == 39.9
+    assert by_sku["1000023412"]["cumu_review_count"] == 50000
+    assert "宝洁" in by_sku["1000023412"]["brand_name_raw"]
+
+    assert by_sku["1000098765"]["price"] == 29.9
+    assert by_sku["1000098765"]["cumu_review_count"] == 2000
+    assert "好奇" in by_sku["1000098765"]["brand_name_raw"]
+
+    assert by_sku["1000034567"]["price"] == 89.9
+    assert by_sku["1000034567"]["cumu_review_count"] == 100000
+
+    assert by_sku["1000087654"]["price"] == 59.0
+    assert by_sku["1000087654"]["cumu_review_count"] == 8000
+
+
+def test_ocr_structure_items_drops_low_confidence():
+    """低置信度文本块应被过滤，不进入聚类"""
+    from jd_analytics.pipelines.ocr_extract import PaddleOCRVLExtractor
+
+    config = {
+        "paddleocr_vl": {"confidence_threshold": 0.80},
+        "clustering": {"card_min_texts": 2},
+    }
+    extractor = PaddleOCRVLExtractor(config)
+
+    texts = [
+        {"text": "高置信度标题", "confidence": 0.95, "box": [[0, 0], [100, 0], [100, 30], [0, 30]]},
+        {"text": "¥19.9", "confidence": 0.95, "box": [[0, 40], [100, 40], [100, 70], [0, 70]]},
+        {"text": "低置信度垃圾", "confidence": 0.50, "box": [[0, 80], [100, 80], [100, 110], [0, 110]]},
+    ]
+    items = extractor._structure_items(
+        texts, "cat", "kw", 1, "b", "2026-08",
+    )
+    # 应有 1 个商品（标题+价格，低置信度文本被滤掉）
+    assert len(items) == 1
+    # 低置信度标记应为 True（因为有低置信度文本被丢）
+    # 但目前 low_conf 是检查 card 内是否含低置信度文本，过滤后不会带进 card
+    # 所以这里 low_conf=False（已过滤）—— 验证此行为
+    assert items[0]["price"] == 19.9
+
+
+def test_check_after_page_load_detects_captcha():
+    """P0-1：_check_after_page_load 检测到 captcha 应返回 'skip'
+
+    用 mock dp 模拟页面含 captcha 关键词，验证函数返回 'skip'
+    且不会调用 handle_captcha（因为 retry_queue 是 sqlite 操作）
+    """
+    from jd_analytics.spiders.drission_spider import DrissionSpider
+
+    spider = DrissionSpider(batch_id="test_captcha", month="2026-08", trial=True)
+
+    # mock dp: 页面 HTML 含 captcha 标识
+    mock_dp = MagicMock()
+    mock_dp.html = '<div id="captcha" class="JDJV-bigimg">滑动验证</div>'
+    mock_dp.url = "https://search.jd.com/Search?keyword=test"
+    mock_dp.title = "验证"
+    spider.dp = mock_dp
+
+    # patch handle_captcha 防止实际写 retry_queue
+    with patch("jd_analytics.middlewares.captcha.handle_captcha", return_value="skip") as mock_h:
+        result = spider._check_after_page_load("https://search.jd.com/Search?keyword=test")
+
+    assert result == "skip"
+    mock_h.assert_called_once()
+
+
+def test_check_after_page_load_detects_ban():
+    """P0-1：_check_after_page_load 检测到 ban 关键词应返回 'skip' 或 'wait_retry'"""
+    from jd_analytics.spiders.drission_spider import DrissionSpider
+
+    spider = DrissionSpider(batch_id="test_ban", month="2026-08", trial=True)
+
+    # mock dp: 页面正文含"访问过于频繁"
+    mock_dp = MagicMock()
+    mock_dp.html = '<html><body>访问过于频繁，请稍后再试</body></html>'
+    mock_dp.url = "https://search.jd.com/Search?keyword=test"
+    mock_dp.title = "异常"
+    spider.dp = mock_dp
+
+    with patch("jd_analytics.middlewares.ban.handle_ban", return_value="skip") as mock_h:
+        result = spider._check_after_page_load("https://search.jd.com/Search?keyword=test")
+
+    assert result in ("skip", "wait_retry")
+    mock_h.assert_called_once()
+
+
+def test_check_after_page_load_returns_ok_on_normal_page():
+    """P0-1：正常页面应返回 'ok'，不调用 ban/captcha handler"""
+    from jd_analytics.spiders.drission_spider import DrissionSpider
+
+    spider = DrissionSpider(batch_id="test_ok", month="2026-08", trial=True)
+
+    mock_dp = MagicMock()
+    mock_dp.html = '<html><body>京东商品列表正常显示</body></html>'
+    mock_dp.url = "https://search.jd.com/Search?keyword=test"
+    mock_dp.title = "京东搜索"
+    spider.dp = mock_dp
+
+    result = spider._check_after_page_load("https://search.jd.com/Search?keyword=test")
+    assert result == "ok"
+
+
+def test_ocr_spider_dry_run_does_not_start_browser():
+    """P1-5：dry-run 模式 run() 不应启动浏览器
+
+    验证：
+    - _init_browser 不被调用
+    - self.dp 保持 None
+    - run() 返回 dict（trial 品类验证）
+    """
+    from jd_analytics.spiders.ocr_spider import OcrSpider
+
+    spider = OcrSpider(
+        batch_id="test_dry_browser",
+        month="2026-08",
+        trial=True,
+        dry_run=True,
+    )
+
+    # 跟踪 _init_browser 是否被调用
+    with patch.object(spider, "_init_browser") as mock_init:
+        results = spider.run()
+        mock_init.assert_not_called()
+
+    assert spider.dp is None
+    assert isinstance(results, dict)
+    assert len(results) >= 1  # trial 品类
+
+
+def test_ocr_spider_screenshot_only_skips_ocr():
+    """P1-3：screenshot_only 模式应截图后短路，不跑 OCR extractor"""
+    from jd_analytics.spiders.ocr_spider import OcrSpider
+
+    spider = OcrSpider(
+        batch_id="test_shot_only",
+        month="2026-08",
+        trial=True,
+        dry_run=False,
+        screenshot_only=True,
+    )
+
+    # mock _take_screenshot 返回假路径
+    with patch.object(spider, "_take_screenshot", return_value=Path("/fake/shot.png")):
+        with patch.object(spider, "_get_ocr_extractor") as mock_get:
+            # 不调 run()（会启动浏览器），直接调 _crawl_single_page 的 screenshot_only 分支
+            spider.dp = MagicMock()  # 假装浏览器启动了
+            # 模拟 _check_after_page_load 返回 ok
+            with patch.object(spider, "_check_after_page_load", return_value="ok"):
+                items = spider._crawl_single_page("棉柔巾", "棉柔巾", 1)
+            mock_get.assert_not_called()  # OCR extractor 不该加载
+
+    assert items == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -81,6 +81,7 @@ class OcrSpider(DrissionSpider):
         ocr_engine: str = "paddleocr_vl",
         screenshot_format: str = "png",
         dry_run: bool = False,
+        screenshot_only: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -89,6 +90,9 @@ class OcrSpider(DrissionSpider):
         self.ocr_engine = ocr_engine
         self.screenshot_format = screenshot_format
         self.dry_run = dry_run
+        # screenshot_only 模式：截图后不跑 OCR（用于验证截图 API + 反爬栈）
+        # 不走 dry-run（要真启动浏览器），但跳过 OCR extractor
+        self.screenshot_only = screenshot_only
 
         # 加载 OCR 配置
         with open(OCR_CONFIG_PATH, encoding="utf-8") as f:
@@ -173,49 +177,134 @@ class OcrSpider(DrissionSpider):
 
         return self._ocr_extractor
 
-    def _run_ocr(self, screenshot_path: Path) -> list[dict[str, Any]]:
+    def _run_ocr(
+        self,
+        screenshot_path: Path,
+        category_name: str,
+        keyword: str,
+        page: int,
+    ) -> list[dict[str, Any]]:
         """对截图跑 OCR，返回结构化商品列表
 
         返回 list[item_dict]，item_dict 字段对齐 drission_spider 的 _build_item
+
+        Args:
+            screenshot_path: 截图文件路径
+            category_name: 品类名（参数传递，不靠实例状态）
+            keyword: 搜索关键词
+            page: 页码
         """
         extractor = self._get_ocr_extractor()
         items = extractor.extract_from_screenshot(
             screenshot_path=screenshot_path,
-            category_name=self._current_category_name,
-            keyword=self._current_keyword,
-            page=self._current_page,
+            category_name=category_name,
+            keyword=keyword,
+            page=page,
             batch_id=self.batch_id,
             month=self.month,
         )
         return items
+
+    # ===== 重写 crawl_category（P0-2：去掉无用的 listen.start/stop）=====
+
+    def crawl_category(self, category: dict[str, Any]) -> list[dict[str, Any]]:
+        """OCR 路线爬取单个品类
+
+        P0-2 修复（云长 review）：父类 `crawl_category` 在开头调
+        `dp.listen.start(JD_SEARCH_API_PATTERN)` 监听 JSON 接口，
+        但 OCR 路线不解析 JSON，监听纯属浪费且会触发额外网络请求。
+        此处重写为：跳过 listen，直接走 page loop。
+
+        限速 / 单 IP 日配额 / 点击下一页等行为复用父类逻辑。
+        """
+        name = category["name"]
+        keyword = (category.get("aliases") or [name])[0]
+        cid2 = category.get("cid2", "")
+        cid3 = category.get("cid3", "")
+        logger.info(
+            f"=== [OCR] 开始爬品类 {name} "
+            f"(keyword={keyword}, cid2={cid2}, cid3={cid3}) ==="
+        )
+
+        assert self.dp is not None, "Browser not initialized"
+
+        all_items: list[dict[str, Any]] = []
+        page = 1
+        while page <= self.max_pages_per_category:
+            if not self._check_daily_limit():
+                break
+
+            logger.info(f"[{name}] page {page}/{self.max_pages_per_category}")
+            page_items = self._crawl_single_page(name, keyword, page)
+            all_items.extend(page_items)
+            logger.info(
+                f"[{name}] page {page} done: +{len(page_items)} items "
+                f"(total {len(all_items)})"
+            )
+
+            if page >= self.max_pages_per_category:
+                break
+
+            # 点击"下一页" + 限速（复用父类）
+            if not self._click_next_page():
+                logger.info(f"No more pages for {name}")
+                break
+
+            page += 1
+            # 单 IP 慢爬防封：每页间 sleep + 随机抖动
+            import random
+            if random.random() < 0.05:
+                sleep_sec = random.uniform(10.0, 20.0)
+                logger.info(f"  long pause {sleep_sec:.1f}s (5% chance, 仿真阅读)")
+            else:
+                sleep_sec = self.page_sleep_seconds + random.uniform(0, 3.0)
+                logger.info(f"  sleep {sleep_sec:.1f}s between pages")
+            time.sleep(sleep_sec)
+
+        logger.info(f"=== [OCR] 品类 {name} finished: {len(all_items)} items ===")
+        return all_items
 
     # ===== 重写单页爬取 =====
 
     def _crawl_single_page(
         self, category_name: str, keyword: str, page: int
     ) -> list[dict[str, Any]]:
-        """OCR 路线：访问页面 → 滚动 → 截图 → OCR 提取
+        """OCR 路线：访问页面 → 反爬检测 → 滚动 → 截图 → OCR 提取
 
         与 DrissionSpider._crawl_single_page 的区别：
         - 不监听 JSON 接口
         - 不解析 JSON
         - 改为截图 + OCR
+        - P0-1：接入 `_check_after_page_load` 真正生效的 ban/captcha 检测
         """
         assert self.dp is not None
 
-        # 记录当前上下文（供 _run_ocr 用）
-        self._current_category_name = category_name
-        self._current_keyword = keyword
-        self._current_page = page
-
+        # 上下文通过参数传递（不污染实例状态）
         # 1. 访问搜索页
         url = JD_SEARCH_URL.format(keyword=quote(keyword), page=page)
         if page == 1:
             self.dp.get(url)
             self.daily_counter += 1
-        # 后续页通过点击下一页触发
 
-        # 2. 滚动到页底加载懒加载内容（截图前必须）
+            # 2. 反爬检测（P0-1 修复：每次 get 后调用）
+            status = self._check_after_page_load(url)
+            if status == "skip":
+                logger.warning(
+                    f"[{category_name}] page {page} skipped: captcha/ban"
+                )
+                return []
+            if status == "wait_retry":
+                # ban 退避后重试一次
+                logger.info(f"[{category_name}] page {page} retrying after ban backoff")
+                self.dp.get(url)
+                status2 = self._check_after_page_load(url)
+                if status2 != "ok":
+                    logger.warning(
+                        f"[{category_name}] page {page} retry failed: {status2}"
+                    )
+                    return []
+
+        # 3. 滚动到页底加载懒加载内容（截图前必须）
         try:
             self.dp.scroll.to_bottom()
             # 给懒加载一点时间
@@ -229,35 +318,98 @@ class OcrSpider(DrissionSpider):
             logger.warning(f"No screenshot for page {page}, skipping OCR")
             return []
 
+        # screenshot_only 模式：截图后不跑 OCR（验证截图 API + 反爬栈用）
+        if self.screenshot_only:
+            logger.info(
+                f"[{category_name}] page {page} screenshot-only mode, "
+                f"skipping OCR"
+            )
+            return []
+
         # 4. OCR 提取
-        page_items = self._run_ocr(screenshot_path)
+        page_items = self._run_ocr(screenshot_path, category_name, keyword, page)
         logger.info(
             f"[{category_name}] page {page} OCR extracted: {len(page_items)} items"
         )
 
         # 5. 通过 pipeline 链处理（复用 drission_spider 的 pipeline）
+        # 链序：validation → dedup → storage → cold_storage
         processed: list[dict[str, Any]] = []
         for item in page_items:
             try:
                 item = self.validation_pipeline.process_item(item, spider=None)
                 item = self.dedup_pipeline.process_item(item, spider=None)
                 self.storage_pipeline.process_item(item, spider=None)
+                # ColdStorage：原始 JSON 落 parquet 作 debug（90 天 GC）
+                self.cold_storage_pipeline.process_item(item, spider=None)
                 processed.append(item)
             except Exception as e:
                 logger.debug(f"Pipeline dropped item: {e}")
 
         return processed
 
-    # ===== 重写 run（加截图 GC）=====
+    # ===== 重写 run（加截图 GC + P1-5 dry-run 不启动浏览器）=====
 
     def run(self) -> dict[str, int]:
-        """执行爬取 - 在 DrissionSpider.run 前加截图 GC"""
+        """执行爬取 - 在 DrissionSpider.run 前加截图 GC
+
+        P1-5 修复（云长 review）：dry-run 模式完全跳过浏览器启动，
+        只验证代码路径（pipeline 链 / OCR 配置加载 / GC 调用）。
+
+        DrissionSpider.run 第一行就是 `self._init_browser()`，
+        dry-run 必须在此短路。
+        """
         # 爬取前清理过期截图
         if self.ocr_config.get("retention", {}).get("run_before_crawl", True):
             logger.info("Running screenshot GC before crawl...")
             self.screenshot_gc.cleanup()
 
+        if self.dry_run:
+            return self._dry_run_path()
+
         return super().run()
+
+    def _dry_run_path(self) -> dict[str, int]:
+        """dry-run 验证路径：不启动浏览器，只走通 pipeline 链
+
+        验证项：
+        - OCR 配置可加载（已在 __init__ 完成）
+        - ScreenshotGC 可调用（已在 run() 开头完成）
+        - pipeline 链可实例化（validation / dedup / storage）
+        - OCR extractor 可 lazy 加载（MockOcrExtractor）
+        - 各品类配置可遍历
+        """
+        logger.warning("=" * 60)
+        logger.warning("DRY-RUN MODE: 不启动浏览器、不访问京东、不跑真实 OCR")
+        logger.warning("只验证代码路径（配置加载 / pipeline 链 / OCR extractor）")
+        logger.warning("=" * 60)
+
+        results: dict[str, int] = {}
+
+        # 验证 OCR extractor 可加载（mock）
+        try:
+            extractor = self._get_ocr_extractor()
+            logger.info(f"OCR extractor loaded: {extractor.__class__.__name__}")
+        except Exception as e:
+            logger.error(f"OCR extractor load failed: {e}")
+            return results
+
+        # 遍历品类配置，验证可解析
+        if self.trial and self.categories_config.get("trial_category"):
+            cats = [self.categories_config["trial_category"]]
+        else:
+            cats = [
+                c for c in self.categories_config.get("categories", [])
+                if c.get("cid2") and c.get("cid3")
+            ]
+
+        for cat in cats:
+            name = cat["name"]
+            logger.info(f"[DRY-RUN] 品类 {name} 配置 OK (cid2={cat.get('cid2')})")
+            results[name] = 0
+
+        logger.info(f"[DRY-RUN] Done. Verified {len(results)} categories.")
+        return results
 
 
 def main():
@@ -321,6 +473,11 @@ def main():
         action="store_true",
         help="只验证代码路径，不实际访问京东、不跑 OCR",
     )
+    parser.add_argument(
+        "--screenshot-only",
+        action="store_true",
+        help="只截图不跑 OCR（验证截图 API + 反爬栈用，会真启动浏览器）",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -344,6 +501,7 @@ def main():
         ocr_engine=args.ocr_engine,
         screenshot_format=args.screenshot_format,
         dry_run=args.dry_run,
+        screenshot_only=args.screenshot_only,
     )
 
     # 初始化数据库（建表）
