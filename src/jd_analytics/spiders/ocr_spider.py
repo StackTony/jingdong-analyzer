@@ -308,6 +308,13 @@ class OcrSpider(DrissionSpider):
             if page == 1:
                 self.dp.get(url)
             # 后续页已通过 _click_next_page 触发，不重复 get
+            # J1 修复（云长 review）：重试后重读 dp.url
+            # 退避期间页面可能被京东重定向到验证码页（verify.jd.com），
+            # current_url 缓存已过时；retry_queue 记的 URL 必须是真实问题页
+            try:
+                current_url = self.dp.url
+            except Exception:
+                pass  # 保留旧 current_url
             status2 = self._check_after_page_load(current_url)
             if status2 != "ok":
                 logger.warning(

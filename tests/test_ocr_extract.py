@@ -649,5 +649,59 @@ def test_ocr_spider_main_dry_run_skips_db_aggregator_report():
     mock_report.assert_not_called()
 
 
+def test_ocr_spider_wait_retry_uses_refreshed_url_after_redirect():
+    """J1（云长 review）：wait_retry 重试后用重读的 dp.url
+
+    场景：page=1 访问后检测到 ban（wait_retry），退避期间京东把页面
+    重定向到 verify.jd.com（验证码页）。重试时 _check_after_page_load
+    拿到的 URL 应该是重读的 verify.jd.com，不是缓存的 search.jd.com。
+
+    验证：_check_after_page_load 第一次用 page1 URL，第二次（重试后）
+    用重读的 URL（dp.url 已变）。
+    """
+    from unittest.mock import PropertyMock
+    from jd_analytics.spiders.ocr_spider import OcrSpider
+
+    spider = OcrSpider(
+        batch_id="test_j1_url_refresh",
+        month="2026-08",
+        trial=True,
+        dry_run=False,
+        screenshot_only=True,
+    )
+
+    # 模拟浏览器：dp.url 用 PropertyMock 模拟属性访问
+    # 第一次取是 search URL，第二次取（重试后重读）是 verify URL
+    mock_dp = MagicMock()
+    url_values = [
+        "https://search.jd.com/Search?keyword=test&page=1",
+        "https://verify.jd.com/captcha",
+    ]
+    # 用 type(mock_dp).url = PropertyMock(side_effect=...) 设置属性
+    type(mock_dp).url = PropertyMock(side_effect=url_values)
+    spider.dp = mock_dp
+
+    # _check_after_page_load 第一次返回 wait_retry，第二次返回 ok
+    with patch.object(
+        spider, "_check_after_page_load",
+        side_effect=["wait_retry", "ok"],
+    ) as mock_check:
+        with patch.object(spider, "_take_screenshot", return_value=Path("/fake/shot.png")):
+            items = spider._crawl_single_page("棉柔巾", "棉柔巾", page=1)
+
+    # _check_after_page_load 调了 2 次
+    assert mock_check.call_count == 2
+
+    # 第一次调用用 search URL
+    first_call_url = mock_check.call_args_list[0].args[0]
+    assert "search.jd.com" in first_call_url
+
+    # 第二次调用（重试后）用重读的 verify URL
+    second_call_url = mock_check.call_args_list[1].args[0]
+    assert "verify.jd.com" in second_call_url, (
+        f"Expected verify.jd.com URL after refresh, got: {second_call_url}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
