@@ -1,0 +1,108 @@
+# 截图区域定位规则 v1（spec F001-ocr-route §3.2）
+# 用 CSS selector 定位京东搜索页商品卡片，再从子区域提取字段
+# 选择器版本化：版本号变更需重跑月度冒烟测试
+
+version: "1"
+updated: 2026-08-26
+
+# 京东搜索页商品列表容器
+list_container:
+  # 商品列表 ul（京东 search.jd.com/Search 页面结构）
+  selector: "ul.gl-warp"
+  # 单个商品 li
+  item_selector: "li.gl-item"
+
+# 单个商品卡片内的字段定位
+# 每个字段：CSS selector + 后处理规则
+fields:
+  # 商品标题
+  title:
+    selector: "div.p-name em"
+    # 去除 HTML 标签 + 换行
+    post_process: "strip_html"
+    # 必需字段
+    required: true
+
+  # 价格（最终价）
+  price:
+    selector: "div.p-price strong i"
+    post_process: "parse_price"
+    required: true
+
+  # 原价（划线价，可选）
+  ori_price:
+    selector: "div.p-price del"
+    post_process: "parse_price"
+    required: false
+
+  # 店铺名（京东 shopName 通常含品牌信息）
+  shop_name:
+    selector: "div.p-shop a"
+    post_process: "strip"
+    required: true
+
+  # 商品链接（取 SKU ID）
+  item_url:
+    selector: "div.p-name a"
+    attribute: "href"
+    post_process: "extract_sku_id"
+    required: true
+
+  # 评价数（京东页面"已有 N 人评价"字段）
+  comment_count:
+    selector: "div.p-commit strong a"
+    post_process: "parse_count"
+    required: false
+
+  # 促销标签（可选，用于识别"100万+"等销量信息）
+  promo_label:
+    selector: "div.p-icons span"
+    post_process: "strip"
+    required: false
+
+# ===== OCR 识别后处理规则 =====
+post_process_rules:
+  # 去除 HTML 标签
+  strip_html:
+    regex: "<[^>]+>"
+    replacement: ""
+    then: "strip"
+
+  # 解析价格（"¥1486.65" / "1486.65" → 1486.65）
+  parse_price:
+    regex: "([0-9]+(?:\\.[0-9]{1,2})?)"
+    group: 1
+    type: float
+
+  # 解析数量（"100万+" → 1000000, "5000+" → 5000）
+  parse_count:
+    rules:
+      - pattern: "(\\d+(?:\\.\\d+)?)\\s*万\\+?"
+        multiplier: 10000
+        type: int
+      - pattern: "(\\d+)\\+"
+        multiplier: 1
+        type: int
+      - pattern: "(\\d+)"
+        multiplier: 1
+        type: int
+
+  # 从 URL 提取 SKU ID（/item.jd.com/100123456.html → 100123456）
+  extract_sku_id:
+    regex: "/(\\d+)\\.html"
+    group: 1
+    type: str
+
+  # 去除空白
+  strip:
+    strip: true
+
+# ===== 兜底规则 =====
+# OCR 识别失败时的处理策略
+fallback:
+  # 必需字段缺失：丢弃该 item
+  on_required_missing: drop
+  # 可选字段缺失：留空
+  on_optional_missing: empty
+  # 置信度低于阈值：标记 low_confidence=True 但不丢弃
+  on_low_confidence: mark

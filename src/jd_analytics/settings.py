@@ -112,3 +112,16 @@ CATEGORIES_CONFIG = str(Path(__file__).parent / "config" / "categories.yaml")
 
 # 列表页数（JD_Spider 199 页 × 60 商品 = 11940）
 MAX_PAGES_PER_CATEGORY = 199
+
+# ===== OCR 路线配置（spec F001-ocr-route）=====
+# 截图目录
+SCREENSHOT_PATH = os.getenv(
+    "SCREENSHOT_PATH",
+    str(Path(__file__).parent.parent.parent / "data" / "screenshots"),
+)
+# 截图保留天数（铲屎官拍板 7 天）
+SCREENSHOT_RETENTION_DAYS = int(os.getenv("SCREENSHOT_RETENTION_DAYS", "7"))
+# OCR 引擎（paddleocr_vl | qwen_vl_ocr_api）
+OCR_ENGINE = os.getenv("OCR_ENGINE", "paddleocr_vl")
+# OCR 配置文件路径
+OCR_CONFIG_PATH = str(Path(__file__).parent / "config" / "ocr_config.yaml")
