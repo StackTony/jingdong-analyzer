@@ -377,3 +377,99 @@ def test_llm_reviewer_prompt_includes_run_log():
     assert "clean.x" in user_msg
     assert "model.y" in user_msg
     assert "OK" in user_msg or "FAIL" in user_msg
+
+
+# ===== P2-1: max_tokens 应读 ProviderConfig，不硬编码 2000 =====
+
+def test_llm_plan_generator_max_tokens_reads_provider_config():
+    """LLMPlanGenerator 调 provider.chat 时 max_tokens 应从 provider.config.max_tokens 读
+
+    关羽 P2-1：llm_plan_generator.py:124 硬编码 max_tokens=2000 覆盖 yaml 的 4000。
+    修法：用 self.provider.config.max_tokens 代替硬编码。
+    """
+    from unittest.mock import MagicMock
+    from clowder_analytics.ai.llm_provider import ProviderConfig
+
+    df = pd.DataFrame({"brand": ["a"], "sales": [10]})
+    ds = _make_dataset(df)
+
+    # 构造 config.max_tokens=4000 的 mock provider
+    fake_provider = MagicMock()
+    fake_provider.config = ProviderConfig(
+        name="csi", base_url="x", api_key="y", model="m", max_tokens=4000,
+    )
+    fake_resp = MagicMock()
+    fake_resp.choices = [MagicMock()]
+    fake_resp.choices[0].message.content = json.dumps({
+        "plan_id": "p1", "intent": "X", "schema_fingerprint": ds.schema_fingerprint,
+        "steps": [{"op": "model.topn", "args": {}}],
+    })
+    fake_provider.chat.return_value = fake_resp.choices[0].message.content
+
+    gen = LLMPlanGenerator(provider=fake_provider)
+    gen.generate("问题", ds, intent="X")
+
+    # 关键断言：max_tokens 应是 config 里的 4000，不是硬编码 2000
+    call_kwargs = fake_provider.chat.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 4000, (
+        f"max_tokens 应读 provider.config.max_tokens (4000)，"
+        f"实际传了 {call_kwargs['max_tokens']}（硬编码 2000 bug）"
+    )
+
+
+# ===== P2-2: scan_and_promote 不应只扫 route=="B" =====
+
+def test_scan_and_promote_covers_fallback_route_runs():
+    """scan_and_promote 应覆盖所有 route 的 run，不只 route=="B"
+
+    关羽 P2-2：promoter.py:159 过滤 r.route=="B"，漏 fallback 路径。
+    spec §7.3 路径1"命中执行 ≥ N 次"不区分路由。
+    修法：去掉 r.route == "B" 过滤。
+
+    场景：fallback 生成的 plan，run 记 route="fallback" + matched_plan_id。
+    scan_and_promote 应能扫到并触发晋升检查。
+    """
+    import tempfile
+    from pathlib import Path
+    from clowder_analytics.flow_library.store import FlowLibrary
+    from clowder_analytics.flow_library.promoter import Promoter
+    from clowder_analytics.flow_library.models import RunRecord
+    from clowder_analytics.orchestrator.plan import Plan, Step
+
+    df = pd.DataFrame({"brand": ["a", "b"], "sales": [10, 20]})
+    fp = compute_fingerprint(df)
+
+    with tempfile.TemporaryDirectory() as td:
+        lib = FlowLibrary(base_dir=td)
+        # 构造一个 plan
+        plan = Plan(
+            plan_id="fb-001", intent="测试", schema_fingerprint=fp,
+            steps=[Step(op="model.topn", args={"group_by": ["brand"], "value_col": "sales", "n": 2, "rank_by": "value"})],
+        )
+        lib.save_plan(plan)
+
+        # 记 3 次成功 run，route="fallback"（不是 "B"）
+        for _ in range(3):
+            lib.save_run(RunRecord(
+                schema_fingerprint=fp, intent="测试",
+                route="fallback", success=True,
+                matched_plan_id="fb-001",
+            ))
+
+        promoter = Promoter(lib)
+        # scan_and_promote 应扫到 route="fallback" 的 run 并晋升
+        promoted = promoter.scan_and_promote()
+        assert len(promoted) >= 1, (
+            "scan_and_promote 应覆盖 route='fallback' 的 run，"
+            "不只 route=='B'（关羽 P2-2）"
+        )
+
+
+# ===== P2-3: run.py fallback 路径死代码 =====
+# 关羽 P2-3：run.py:99-102 fallback 先调 match_plan，但 router 已判 B 未命中
+# （否则不走 fallback），match_plan 必然返回 None，是死代码。
+#
+# 删死代码是纯 refactor（外部行为不变：删前删后 fallback 都走 generator.generate，
+# llm_calls=1）。TDD refactor 阶段不写新测试，靠现有 test_run_fallback_then_b_track_on_second_call
+# + test_run_auto_promote_after_three_successes 等保护行为。
+# 此处留注释标记，修复在 run.py L99-102。

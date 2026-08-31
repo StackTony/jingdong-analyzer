@@ -114,14 +114,20 @@ class LLMPlanGenerator(AIPlanGenerator):
     def _call_with_retry(
         self, messages: list[dict[str, str]], max_retries: int = 2,
     ) -> dict[str, Any]:
-        """调 LLM + JSON 校验 + 失败重试一次（spec §5.1）"""
+        """调 LLM + JSON 校验 + 失败重试一次（spec §5.1）
+
+        max_tokens 从 provider.config 读（yaml 配置生效），不硬编码。
+        关羽 P2-1 修复：原硬编码 2000 覆盖 yaml 的 4000。
+        """
+        # 从 provider config 读 max_tokens（yaml 配置生效）
+        config_max_tokens = getattr(getattr(self.provider, "config", None), "max_tokens", 2000)
         last_err = None
         for attempt in range(max_retries):
             try:
                 content = self.provider.chat(
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=2000,
+                    max_tokens=config_max_tokens,
                     response_format={"type": "json_object"},
                 )
                 plan_dict = self._parse_json(content)

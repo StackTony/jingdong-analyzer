@@ -94,17 +94,14 @@ def run(
         plan = r.plan
         matched_plan_id = plan.plan_id
     else:
-        # fallback：先查 library 是否有同 (fp, intent) 的 plan 复用
-        # （避免每次 fallback 都生成新 plan_id 导致晋升计数失效）
-        existing_plan = library.match_plan(dataset.schema_fingerprint, r.intent or "")
-        if existing_plan is not None:
-            plan = existing_plan
-            llm_calls = 0  # 复用，不调 LLM
-        else:
-            plan = generator.generate(question, dataset, intent=r.intent)
-            llm_calls = 1
-            # 沉淀生成的 Plan 供下次复用（spec §7.1 B 轨）
-            library.save_plan(plan)
+        # fallback：router 已判 A/B 都未命中（router L67/L72 调过 match_template/match_plan）
+        # 生成新 Plan 并沉淀，下次同 (fp, intent) 走 B 轨命中
+        # （spec §7.1 B 轨：fallback 生成的 Plan save 后下次复用）
+        # 关羽 P2-3 修复：删除原 L99-102 的 match_plan 复用分支（死代码——
+        # router 已调 match_plan 判未命中，这里再调必然返回 None）
+        plan = generator.generate(question, dataset, intent=r.intent)
+        llm_calls = 1
+        library.save_plan(plan)
         matched_plan_id = plan.plan_id
 
     # 执行

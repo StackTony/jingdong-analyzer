@@ -154,9 +154,11 @@ class Promoter:
         用于定期触发（如 CLI `jd-analyze flow scan-promote`）。
         """
         # 收集所有 (fp, intent, plan_id) 组合
+        # spec §7.3 路径1"命中执行 ≥ N 次"不区分路由——A/B/fallback 都算命中
+        # 关羽 P2-2 修复：原过滤 r.route == "B" 漏 fallback 路径
         combos: set[tuple[str, str, str]] = set()
         for r in self.library.list_runs():
-            if r.matched_plan_id and r.route == "B":
+            if r.matched_plan_id:
                 combos.add((r.schema_fingerprint, r.intent, r.matched_plan_id))
 
         promoted_ids: list[str] = []
