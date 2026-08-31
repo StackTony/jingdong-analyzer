@@ -473,3 +473,36 @@ def test_scan_and_promote_covers_fallback_route_runs():
 # llm_calls=1）。TDD refactor 阶段不写新测试，靠现有 test_run_fallback_then_b_track_on_second_call
 # + test_run_auto_promote_after_three_successes 等保护行为。
 # 此处留注释标记，修复在 run.py L99-102。
+
+
+# ===== P2-1 后续：LLMReviewer max_tokens 同模式漏网 =====
+
+def test_llm_reviewer_max_tokens_reads_provider_config():
+    """LLMReviewer 调 provider.chat 时 max_tokens 应从 provider.config.max_tokens 读
+
+    关羽 P2-1 同模式漏网：llm_reviewer.py:40 硬编码 max_tokens=2000，
+    覆盖 yaml 配置的 max_tokens（如 4000）。
+    修法：用 self.provider.config.max_tokens 代替硬编码。
+    """
+    from unittest.mock import MagicMock
+    from clowder_analytics.ai.llm_provider import ProviderConfig
+
+    df = pd.DataFrame({"brand": ["a"], "sales": [10]})
+    ds = _make_dataset(df)
+
+    # 构造 config.max_tokens=4000 的 mock provider
+    fake_provider = MagicMock()
+    fake_provider.config = ProviderConfig(
+        name="csi", base_url="x", api_key="y", model="m", max_tokens=4000,
+    )
+    fake_provider.chat.return_value = "## 异常解释\n## 趋势点睛\n## 建议下一步"
+
+    reviewer = LLMReviewer(provider=fake_provider)
+    reviewer.review(ds, charts=[], run_log=[])
+
+    # 关键断言：max_tokens 应是 config 里的 4000，不是硬编码 2000
+    call_kwargs = fake_provider.chat.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 4000, (
+        f"max_tokens 应读 provider.config.max_tokens (4000)，"
+        f"实际传了 {call_kwargs.get('max_tokens')}（llm_reviewer.py:40 硬编码 2000 同模式 bug）"
+    )

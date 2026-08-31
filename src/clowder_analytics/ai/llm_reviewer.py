@@ -34,10 +34,13 @@ class LLMReviewer(AIReviewer):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        # max_tokens 从 provider.config 读（yaml 配置生效），不硬编码
+        # 关羽 P2-1 同模式漏网修复：原硬编码 2000 覆盖 yaml 的 max_tokens
+        config_max_tokens = getattr(getattr(self.provider, "config", None), "max_tokens", 2000)
         content = self.provider.chat(
             messages=messages,
             temperature=0.4,  # 报告稍宽容，允许稍创造性
-            max_tokens=2000,
+            max_tokens=config_max_tokens,
         )
         return content
 
