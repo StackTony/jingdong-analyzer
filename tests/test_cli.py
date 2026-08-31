@@ -68,7 +68,11 @@ def test_cli_inspect_excel(tmp_path):
 
 
 def test_cli_run_csv_topn(tmp_path):
-    """run 命令端到端跑通 CSV TopN 分析（spec AC-8）"""
+    """run 命令端到端跑通 CSV TopN 分析（spec AC-8）
+
+    P6 后会命中冷启动模板走 A 轨（0 LLM）；之前走 fallback/B 轨
+    两种情况都算通过，关键是路由信息出现且不报错
+    """
     csv = tmp_path / "brands.csv"
     df = pd.DataFrame({
         "brand": ["小米", "华为", "OPPO", "vivo", "联想"],
@@ -80,8 +84,8 @@ def test_cli_run_csv_topn(tmp_path):
         "run", "--source", str(csv), "--question", "Top30 品牌销量",
     )
     assert code == 0, f"stderr: {err}"
-    # 输出含路由信息 + 结果摘要
-    assert "route" in out.lower() or "fallback" in out.lower() or "B" in out
+    # 输出含路由信息（A/B/fallback 任一）
+    assert any(x in out for x in ["route", "路由", "A", "B", "fallback"])
 
 
 def test_cli_run_no_review_flag(tmp_path):
