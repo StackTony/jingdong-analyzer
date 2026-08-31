@@ -77,12 +77,31 @@ def cmd_run(args: argparse.Namespace) -> int:
     library = _get_library(args.lib)
     enable_review = not args.no_review
 
+    # 选 generator / reviewer：--llm 时用真实 LLM provider
+    if args.llm:
+        try:
+            from clowder_analytics.ai.llm_plan_generator import LLMPlanGenerator
+            from clowder_analytics.ai.llm_reviewer import LLMReviewer
+            from clowder_analytics.ai.llm_provider import load_provider
+            provider = load_provider(args.llm_provider)
+            generator = LLMPlanGenerator(provider=provider)
+            reviewer = LLMReviewer(provider=provider)
+        except RuntimeError as e:
+            # apiKey 环境变量未设 → 兜底 Fake + 警告
+            print(f"⚠️ LLM provider 加载失败：{e}", file=sys.stderr)
+            print("⚠️ 退回 Fake generator/reviewer", file=sys.stderr)
+            generator = FakePlanGenerator()
+            reviewer = FakeReviewer()
+    else:
+        generator = FakePlanGenerator()
+        reviewer = FakeReviewer()
+
     result = run(
         question=args.question,
         dataset=ds,
         library=library,
-        generator=FakePlanGenerator(),
-        reviewer=FakeReviewer(),
+        generator=generator,
+        reviewer=reviewer,
         enable_review=enable_review,
     )
 
@@ -187,6 +206,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--question", required=True, help="用户问题")
     p_run.add_argument("--no-review", action="store_true", help="跳过 AI Reviewer")
     p_run.add_argument("--lib", default=None, help="Flow Library 目录")
+    p_run.add_argument(
+        "--llm", action="store_true",
+        help="用真实 LLM provider（需 CSI_API_KEY 环境变量）",
+    )
+    p_run.add_argument(
+        "--llm-provider", default="csi",
+        help="LLM provider 名（默认 csi，见 ai_providers.yaml）",
+    )
     p_run.set_defaults(func=cmd_run)
 
     # flow

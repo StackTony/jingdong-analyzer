@@ -159,3 +159,30 @@ def test_cli_run_with_lib_flag_uses_custom_library(tmp_path):
     assert (lib_dir / "templates").is_dir()
     assert (lib_dir / "plans").is_dir()
     assert (lib_dir / "runs").is_dir()
+
+
+def test_cli_run_llm_flag_without_api_key_falls_back_to_fake(tmp_path, monkeypatch):
+    """--llm 但 CSI_API_KEY 未设 → 退回 Fake + 警告（不崩）"""
+    csv = tmp_path / "data.csv"
+    df = pd.DataFrame({"brand": ["a", "b"], "sales": [10, 20]})
+    df.to_csv(csv, index=False, encoding="utf-8")
+
+    # 确保环境变量未设
+    env = {**__import__("os").environ, "CSI_API_KEY": ""}
+    code, out, _ = _run_cli_env(
+        env,
+        "run", "--source", str(csv), "--question", "Top10",
+        "--lib", str(tmp_path), "--llm", "--no-review",
+    )
+    assert code == 0
+    # 应有警告 + 退回 Fake（用 0 LLM 调用，因为命中冷启动模板）
+
+
+def _run_cli_env(env: dict, *args: str, cwd: Path | None = None):
+    """带自定义 env 跑 CLI"""
+    cmd = [sys.executable, "-m", "clowder_analytics.cli", *args]
+    r = subprocess.run(
+        cmd, capture_output=True, cwd=cwd,
+        encoding="utf-8", errors="replace", env=env,
+    )
+    return r.returncode, r.stdout, r.stderr
