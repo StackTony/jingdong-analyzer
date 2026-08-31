@@ -127,7 +127,7 @@ def test_settings():
     assert s.AUTOTHROTTLE_ENABLED is True
     assert s.CONCURRENT_REQUESTS == 1
     assert s.DOWNLOAD_DELAY == 2
-    assert s.DAILY_LIMIT_PER_IP == 1500
+    assert s.DAILY_LIMIT_PER_IP == 800  # 试爬延时调保守（1500→800）
     assert "club.jd.com" in s.JD_COMMENT_API
     assert "search.jd.com" in s.JD_SEARCH_URL
 
