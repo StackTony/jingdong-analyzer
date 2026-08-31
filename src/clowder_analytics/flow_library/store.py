@@ -135,25 +135,28 @@ class FlowLibrary:
     def match_template(self, schema_fingerprint: str, intent: str) -> Template | None:
         """A 轨匹配（spec §6.1 step 1）
 
-        优先级：stable > candidate > （deprecated 跳过）
-        精确匹配 schema_fingerprint + intent
+        优先级：精确 fp > 通配 fp（"*" 或 "_any_"）> （deprecated 跳过）
+        同优先级内 stable > candidate > 取 confidence 最高
+        通配模板用于冷启动（spec §7.3 路径2 / AC-10）
         """
-        candidates = [
+        all_tpls = [
             t for t in self.list_templates()
-            if t.schema_fingerprint == schema_fingerprint
-            and t.intent == intent
+            if t.intent == intent
             and t.stability != "deprecated"
         ]
-        if not candidates:
-            return None
-        # stable 优先
-        stable = [t for t in candidates if t.stability == "stable"]
-        if stable:
-            # 多个 stable 取 confidence 最高
-            return max(stable, key=lambda t: t.confidence)
-        # 无 stable 时 candidate 兜底
-        candidates.sort(key=lambda t: t.confidence, reverse=True)
-        return candidates[0]
+        # 精确匹配
+        exact = [t for t in all_tpls if t.schema_fingerprint == schema_fingerprint]
+        if exact:
+            stable = [t for t in exact if t.stability == "stable"]
+            pool = stable or exact
+            return max(pool, key=lambda t: t.confidence)
+        # 通配匹配（schema_fingerprint 为 "*" 或 "_any_"）
+        wildcard = [t for t in all_tpls if t.schema_fingerprint in ("*", "_any_")]
+        if wildcard:
+            stable = [t for t in wildcard if t.stability == "stable"]
+            pool = stable or wildcard
+            return max(pool, key=lambda t: t.confidence)
+        return None
 
     def match_plan(self, schema_fingerprint: str, intent: str) -> Plan | None:
         """B 轨匹配（spec §6.1 step 2）

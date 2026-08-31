@@ -139,27 +139,14 @@ def cmd_flow_list_plans(args: argparse.Namespace) -> int:
 
 def cmd_flow_stats(args: argparse.Namespace) -> int:
     library = _get_library(args.lib)
-    runs = library.list_runs()
-    if not runs:
+    from clowder_analytics.flow_library.dashboard import compute_stats, format_stats
+    stats = compute_stats(library)
+    if stats.total_runs == 0:
         print("（无运行记录）")
+        print()
+        print(format_stats(stats))
         return 0
-    total = len(runs)
-    a_count = sum(1 for r in runs if r.route == "A")
-    b_count = sum(1 for r in runs if r.route == "B")
-    fallback_count = sum(1 for r in runs if r.route == "fallback")
-    success_count = sum(1 for r in runs if r.success)
-    llm_total = sum(r.llm_calls for r in runs)
-
-    print(f"=== Flow Library 统计 ===")
-    print(f"总运行次数: {total}")
-    print(f"A 轨命中: {a_count} ({a_count/total*100:.1f}%)")
-    print(f"B 轨命中: {b_count} ({b_count/total*100:.1f}%)")
-    print(f"兜底: {fallback_count} ({fallback_count/total*100:.1f}%)")
-    print(f"成功率: {success_count}/{total} ({success_count/total*100:.1f}%)")
-    print(f"LLM 调用总数: {llm_total}（平均 {llm_total/total:.2f} 次/运行）")
-    # 候选模板队列
-    candidates = [t for t in library.list_templates() if t.stability == "candidate"]
-    print(f"候选模板（待审核）: {len(candidates)}")
+    print(format_stats(stats))
     return 0
 
 
