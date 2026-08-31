@@ -5,17 +5,28 @@ topics: [data-analysis, ai-assisted, self-evolving, framework, token-saving]
 doc_kind: spec
 created: 2026-08-31
 owner: 荀彧/文若 (@cat-rp3g6qqr)
-status: draft
+status: in-progress
 reviewers:
   - 郭嘉/奉孝 (@ragdoll-pa82) — 架构 review
-  - 关羽/云长 — 代码质量 review (待指定)
+  - 关羽/云长 (@cat-ko094z1n) — 代码质量 review (已放行 LGTM 2026-08-31)
 ---
 
 # F002: 通用数据分析框架（方案 C — 双轨自进化）
 
-> Status: draft | Owner: 荀彧/文若 (@cat-rp3g6qqr)
+> Status: in-progress | Owner: 荀彧/文若 (@cat-rp3g6qqr)
 > 架构方案: C（双轨 = A 模板库 + B Plan 库 + 晋升通道）
 > 上游决策: 铲屎官 2026-08-31 拍板（"通用框架 + 自进化 + 省 token"）
+
+## Timeline
+
+| 日期 | 事件 |
+|------|------|
+| 2026-08-31 | spec 定稿（方案 C 双轨自进化，铲屎官拍板） |
+| 2026-08-31 | P1-P6 + 真实 LLM 接入实现完成（11 commits, 63 files, +6852 lines） |
+| 2026-08-31 | 关羽跨家族 review 放行（LGTM，覆盖 SHA 1c9d835） |
+| 2026-08-31 | P2 findings TDD 修复（commit 122fc06，关羽延续放行） |
+| 2026-08-31 | 本地 merge feat → main（merge commit 57e454f，铲屎官授权绕过 merge-gate） |
+| 2026-08-31 | push origin/main（57e454f） |
 
 ## Why
 
@@ -41,18 +52,29 @@ reviewers:
 
 ## Acceptance Criteria
 
-- [ ] AC-1: DataSource Adapter 至少支持 4 种源（Excel xlsx / CSV / SQLite / Postgres connection），统一产出 `Dataset` 对象（DataFrame + schema 指纹 + 元数据）
-- [ ] AC-2: 原子能力集至少覆盖：Cleaner 6 个（去重/缺值/类型转换/异常值/标准化/字段映射）、Modeler 6 个（聚合/TopN/趋势/相关性/聚类/异常归因）、Visualizer 4 类（柱/折线/散点/热力）
-- [ ] AC-3: A 轨模板 YAML 声明式可读，支持两种产生方式（LLM 直生成 / B 轨 Plan 晋升），均经人工审核入稳定库；包含 schema 指纹匹配条件 + 原子能力调用序列 + 参数
-- [ ] AC-4: B 轨 Plan JSON 声明式，含执行序列 + 失败处理策略（abort_on_first_error / continue_on_error）+ 用户反馈字段
-- [ ] AC-5: 晋升机制：Plan 在同 schema 指纹 + 同意图下命中执行 ≥ N（默认 3）次且成功率 ≥ 80% → 自动入候选；人工审核后入稳定库
-- [ ] AC-6: 双轨调度：Router 按 (schema 指纹, 意图) 匹配 A → B → 兜底 LLM 生成，命中即跳过下游 LLM 调用
-- [ ] AC-7: AI Reviewer 可关闭；开启时输出"异常解释 + 趋势点睛 + 建议下一步"三段式文字报告
-- [ ] AC-8: CLI 入口 `jd-analyze run --source <path> --question <text>` 跑通端到端
-- [ ] AC-9: Streamlit 面板支持上传 Excel + 选分析模式 + 看交互图 + AI 报告
-- [ ] AC-10: Flow Library 自带 ≥ 3 个 A 轨模板冷启动样本（TopN 趋势 / 异常归因 / 品类对比）
-- [ ] AC-11: 运行日志记录每次执行的 (schema 指纹, 意图, 命中模板/Plan, 失败原因, 用户采纳, 修正建议)，可查询
-- [ ] AC-12: 长期收敛指标可观测：A 命中率 / B 命中率 / 兜底率 / 平均 LLM 调用数 → 仪表盘可见
+- [~] AC-1: DataSource Adapter 至少支持 4 种源（Excel xlsx / CSV / SQLite / Postgres connection），统一产出 `Dataset` 对象（DataFrame + schema 指纹 + 元数据）
+  - ✅ Excel / CSV / SQLite 三种已实现（`src/clowder_analytics/adapters/{excel,csv,sqlite}.py`）
+  - ⬜ Postgres 未实现（MVP 阶段未需要，后续接入生产 DB 时补）
+- [x] AC-2: 原子能力集至少覆盖：Cleaner 6 个（去重/缺值/类型转换/异常值/标准化/字段映射）、Modeler 6 个（聚合/TopN/趋势/相关性/聚类/异常归因）、Visualizer 4 类（柱/折线/散点/热力）
+  - ✅ Cleaner 6 op + Modeler 6 op + Visualizer 4 类（cluster 需 sklearn，未装时跳过）
+- [x] AC-3: A 轨模板 YAML 声明式可读，支持两种产生方式（LLM 直生成 / B 轨 Plan 晋升），均经人工审核入稳定库；包含 schema 指纹匹配条件 + 原子能力调用序列 + 参数
+- [x] AC-4: B 轨 Plan JSON 声明式，含执行序列 + 失败处理策略（abort_on_first_error / continue_on_error）+ 用户反馈字段
+- [x] AC-5: 晋升机制：Plan 在同 schema 指纹 + 同意图下命中执行 ≥ N（默认 3）次且成功率 ≥ 80% → 自动入候选；人工审核后入稳定库
+  - ✅ `promoter.py::check_promote` (N=3 + 80%) + `promote` 幂等 + `scan_and_promote` (P2-2 修复后覆盖所有 route)
+- [x] AC-6: 双轨调度：Router 按 (schema 指纹, 意图) 匹配 A → B → 兜底 LLM 生成，命中即跳过下游 LLM 调用
+  - ✅ `router.py` A→B→fallback 三层匹配
+- [x] AC-7: AI Reviewer 可关闭；开启时输出"异常解释 + 趋势点睛 + 建议下一步"三段式文字报告
+  - ✅ `llm_reviewer.py` + 真实 LLM 烟测三段式报告验证
+- [x] AC-8: CLI 入口 `jd-analyze run --source <path> --question <text>` 跑通端到端
+  - ✅ `cli/__main__.py` 含 `--llm` flag
+- [x] AC-9: Streamlit 面板支持上传 Excel + 选分析模式 + 看交互图 + AI 报告
+  - ✅ `web/app.py`
+- [x] AC-10: Flow Library 自带 ≥ 3 个 A 轨模板冷启动样本（TopN 趋势 / 异常归因 / 品类对比）
+  - ✅ `flow_library_data/templates/cold_start_*.yaml` 三个模板
+- [x] AC-11: 运行日志记录每次执行的 (schema 指纹, 意图, 命中模板/Plan, 失败原因, 用户采纳, 修正建议)，可查询
+  - ✅ `flow_library/store.py::save_run` 写 `runs/runs.jsonl`
+- [x] AC-12: 长期收敛指标可观测：A 命中率 / B 命中率 / 兜底率 / 平均 LLM 调用数 → 仪表盘可见
+  - ✅ `flow_library/dashboard.py`
 
 ## Dependencies
 
@@ -541,14 +563,15 @@ src/jd_analytics/
 
 ## 11. Phase 路线图
 
-| Phase | 内容 | AC 覆盖 | 备注 |
-|-------|------|---------|------|
-| P1 | DataSource Adapter + 原子能力集骨架 + Dataset 抽象 | AC-1, AC-2 | 不含 AI / 双轨，先跑通"读 Excel → 清洗 → 出图"直线 |
-| P2 | Orchestrator + Flow Library 存储 + 单轨（B 轨 Plan） | AC-4, AC-6, AC-11 | 先 B 后 A，降低冷启动难度 |
-| P3 | AI Plan 生成器 + Reviewer | AC-3, AC-5, AC-7 | LLM 兜底 + 文字报告 |
-| P4 | A 轨模板 + 晋升机制 + 仪表盘 | AC-5, AC-10, AC-12 | 自进化闭环 |
-| P5 | CLI 完整入口 + Streamlit 面板 | AC-8, AC-9 | 交付形态 |
-| P6 | 内置 ≥3 个稳定模板冷启动样本 + 长期命中率观测 | AC-10, AC-12 | 验证自进化效果 |
+| Phase | 内容 | AC 覆盖 | 备注 | 状态 |
+|-------|------|---------|------|------|
+| P1 | DataSource Adapter + 原子能力集骨架 + Dataset 抽象 | AC-1, AC-2 | 不含 AI / 双轨，先跑通"读 Excel → 清洗 → 出图"直线 | ✅ |
+| P2 | Orchestrator + Flow Library 存储 + 单轨（B 轨 Plan） | AC-4, AC-6, AC-11 | 先 B 后 A，降低冷启动难度 | ✅ |
+| P3 | AI Plan 生成器 + Reviewer | AC-3, AC-5, AC-7 | LLM 兜底 + 文字报告 | ✅ |
+| P4 | A 轨模板 + 晋升机制 + 仪表盘 | AC-5, AC-10, AC-12 | 自进化闭环 | ✅ |
+| P5 | CLI 完整入口 + Streamlit 面板 | AC-8, AC-9 | 交付形态 | ✅ |
+| P6 | 内置 ≥3 个稳定模板冷启动样本 + 长期命中率观测 | AC-10, AC-12 | 验证自进化效果 | ✅ |
+| LLM+ | 真实 GLM-5.2 接入 + op_spec args schema 注入 + P2 findings TDD 修复 | AC-3, AC-5, AC-7 | 替换 P3 Fake 实现，真实 LLM 端到端验证 | ✅ |
 
 **MVP 里程碑**：P1+P2+P3 跑通"读 Excel → 兜底生成 Plan → 执行 → 出图 + AI 报告 → 沉淀"端到端。P4 是自进化真正生效的里程碑。
 
