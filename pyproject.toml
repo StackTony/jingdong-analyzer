@@ -31,6 +31,18 @@ ocr = [
     "paddleocr>=3.0",
     "paddlepaddle>=3.0",
 ]
+ai = [
+    # F002 LLM 真实接入（可选，spec §5.3）
+    # pip install -e ".[ai]" 启用真实 LLM provider
+    "openai>=1.0",              # OpenAI 兼容协议（csi / GLM / 任意 OpenAI-compatible）
+    "plotly>=5.0",              # Visualizer 渲染（已在 P1 用）
+    "scikit-learn>=1.0",        # Modeler cluster op（可选）
+]
+viz = [
+    # F002 Visualizer 可视化（可选）
+    "plotly>=5.0",
+    "streamlit>=1.30",          # Streamlit 面板（P5）
+]
 
 [project.scripts]
 jd-collect = "jd_analytics.cli:collect"

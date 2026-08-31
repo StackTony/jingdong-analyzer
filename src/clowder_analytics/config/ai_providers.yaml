@@ -1,0 +1,72 @@
+# F002 AI Provider 配置（spec §5.3）
+#
+# 参考来源：opencode GLM-5.2 配置（~/.config/opencode/opencode.json）
+# 安全策略：apiKey 不入库，走环境变量 CSI_API_KEY（或 provider 名大写 _API_KEY）
+#
+# 运行时切换：
+#   export CLOWDER_AI_PROVIDER=csi  # 选 provider
+#   export CSI_API_KEY=sk-xxx       # 对应 apiKey
+
+default_provider: csi
+
+providers:
+  csi:
+    name: csi.ai
+    base_url: http://113.46.219.251:8080/v1/
+    api_key_env: CSI_API_KEY  # 从此环境变量取 apiKey
+    model: GLM-5.2
+    # OpenAI 兼容协议（chat completions）
+    protocol: openai
+    # 调用参数
+    # GLM-5.2 是推理模型，max_tokens 要留出 reasoning_tokens 空间（≥2000）
+    temperature: 0.3       # Plan 生成需稳定，低温
+    max_tokens: 4000       # 推理模型需要大 max_tokens（reasoning + output）
+    timeout_seconds: 120  # 推理模型延迟较高
+
+  # 备用 provider（占位，待配置）
+  anthropic:
+    name: anthropic
+    base_url: https://api.anthropic.com/v1/
+    api_key_env: ANTHROPIC_API_KEY
+    model: claude-sonnet-4-5
+    protocol: anthropic
+    temperature: 0.3
+    max_tokens: 4000
+    timeout_seconds: 120
+
+# Plan 生成器专用 prompt
+plan_generator:
+  system_prompt: |
+    你是数据分析 Plan 生成器。基于用户问题和数据集 schema，生成一个执行 Plan。
+
+    约束：
+    1. 只能调用清单内的原子能力
+    2. args 必须符合 args_schema
+    3. 输出严格 JSON，不要任何解释文字
+
+    输出 JSON 结构：
+    {
+      "plan_id": "<auto-gen-uuid>",
+      "intent": "<意图标签>",
+      "schema_fingerprint": "<匹配输入>",
+      "steps": [
+        {"op": "clean.<name>"|"model.<name>", "args": {...}}
+      ],
+      "reviewer_enabled": true|false,
+      "fallback_strategy": "abort_on_first_error"|"continue_on_error"
+    }
+
+# Reviewer 专用 prompt（spec §5.2 三段式）
+reviewer:
+  system_prompt: |
+    你是数据分析师 AI Reviewer。基于数据摘要 + 图表 + 执行日志，
+    输出 Markdown 三段式报告：
+
+    ## 异常解释
+    （检测到的异常及其可能原因）
+
+    ## 趋势点睛
+    （关键趋势 / 排名变迁 / 结构性变化）
+
+    ## 建议下一步
+    （推荐的下一步分析方向）

@@ -72,3 +72,11 @@ logs/
 # Scraping runtime
 .crawl-cache/
 .scrapy/
+
+# ===== F002 Flow Library runtime artifacts =====
+# 冷启动模板 (cold_start_*.yaml) 是源码，纳入 git
+# 运行时生成的 plans/runs/晋升/上传临时文件不进 git
+src/clowder_analytics/flow_library_data/plans/*.json
+src/clowder_analytics/flow_library_data/runs/*.jsonl
+src/clowder_analytics/flow_library_data/templates/tpl-*.yaml
+._tmp_upload/
