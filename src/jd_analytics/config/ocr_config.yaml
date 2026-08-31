@@ -1,0 +1,67 @@
+# OCR 引擎配置（spec F001-ocr-route §3）
+# 本期固定 PaddleOCR-VL 自部署；保留切换云 API 的能力
+
+# 引擎选择：paddleocr_vl | qwen_vl_ocr_api | disabled
+engine: paddleocr_vl
+
+# ===== PaddleOCR-VL 配置 =====
+paddleocr_vl:
+  # 模型类型：PP-OCRv5（轻量传统 OCR）| PaddleOCR-VL（0.9B VLM）
+  model: PaddleOCR-VL
+  # 语言
+  lang: ch
+  # 置信度阈值（低于此值的识别结果标记 low_confidence）
+  confidence_threshold: 0.80
+  # 设备：cpu | gpu
+  device: cpu
+  # 单张图最大重试次数
+  max_retries: 2
+  # 超时秒数
+  timeout_seconds: 30
+
+# ===== 商品卡片聚类配置（P1-4 修复）=====
+# 京东搜索结果页是网格布局：每行 5 个商品，每卡 ~250x500px
+# 按 box 坐标聚类成单个商品，避免索引配对导致字段错位
+clustering:
+  # 行聚类：y 中心距离 < 此阈值视为同一卡片行（像素）
+  # 卡片高度 ~500px，卡片内字段 y 跨度可达 400+
+  # 两个卡片行之间 y 跨度 > 500
+  row_y_threshold: 250
+  # 列聚类：x 中心距离 < 此阈值视为同一卡片（像素）
+  # 单卡宽度 ~250，卡片间隙 ~20，故阈值取 280
+  card_x_threshold: 280
+  # 单个卡片最小文本块数（少于则丢弃，可能是广告/页头）
+  card_min_texts: 2
+  # 每页最大商品数（京东搜索页约 60）
+  max_items_per_page: 60
+
+# ===== 阿里云 qwen3.5-ocr API 配置（保留接口，本期不用）=====
+qwen_vl_ocr_api:
+  # API endpoint
+  endpoint: https://dashscope.aliyuncs.com/api/v1
+  # 模型名
+  model: qwen3.5-ocr
+  # API key 从环境变量读
+  api_key_env: DASHSCOPE_API_KEY
+  # 单价（元/页，用于成本监控）
+  price_per_page: 0.18
+
+# ===== 截图配置 =====
+screenshot:
+  # 截图格式：png | jpeg | webp
+  format: png
+  # JPEG 质量（format=jpeg 时生效）
+  jpeg_quality: 85
+  # 全页截图（True）还是可视区域（False）
+  full_page: true
+  # 最大宽度（像素，超过则缩放）
+  max_width: 1920
+
+# ===== 截图保留策略 =====
+retention:
+  # 保留天数
+  days: 7
+  # 清理任务运行间隔（小时）
+  gc_interval_hours: 24
+  # 清理任务在爬取前运行
+  run_before_crawl: true

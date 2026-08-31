@@ -60,6 +60,7 @@ data/raw/
 data/processed/
 data/exports/
 data/cache/
+data/screenshots/          # OCR 路线截图（7 天 GC）
 logs/
 *.log
 *.db

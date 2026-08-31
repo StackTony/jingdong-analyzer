@@ -177,7 +177,14 @@ class DrissionSpider:
         ).replace(":", "").replace("+", "")
 
     def _init_browser(self) -> None:
-        """启动 Chrome 浏览器实例"""
+        """启动 Chrome 浏览器实例
+
+        P0-1 修复（云长 review）：UA 轮换在 ChromiumOptions 层接入
+        """
+        from jd_analytics.middlewares.fingerprint import (
+            get_random_ua, apply_ua_to_drission
+        )
+
         co = ChromiumOptions()
         if self.headless:
             co.headless()
@@ -185,6 +192,15 @@ class DrissionSpider:
         # 持久化 user_data 让登录态保留
         co.set_user_data_path(self.user_data_path)
         co.set_argument("--profile-directory=Default")
+
+        # ===== UA 轮换（P0-1 修复）=====
+        # 每个 Chrome 实例固定一个 UA；轮换通过重启浏览器实现
+        self._current_ua = get_random_ua()
+        apply_ua_to_drission(co, self._current_ua)
+        logger.info(
+            f"UA set: Chrome/{self._current_ua['user_agent'].split('Chrome/')[1].split(' ')[0]}"
+        )
+
         self.dp = ChromiumPage(co)
         logger.info(
             f"Browser started, headless={self.headless}, "
@@ -195,6 +211,40 @@ class DrissionSpider:
             self._do_auto_login()
         elif self.manual_login:
             self._do_manual_login()
+
+    def _check_after_page_load(self, url: str) -> str:
+        """页面加载后的反爬检测（P0-1 修复）
+
+        云长 review：ban/captcha 检测从 Scrapy middleware 改造成
+        DrissionPage 页面加载后的手动检查。
+
+        在每次 `dp.get()` 后调用，返回：
+        - "ok"        : 正常，继续
+        - "skip"      : 被封/验证码，跳过该 URL（已写 retry_queue）
+        - "wait_retry": 被 ban 但可重试（已退避）
+
+        Returns:
+            "ok" | "skip" | "wait_retry"
+        """
+        from jd_analytics.middlewares.ban import detect_ban_response, handle_ban
+        from jd_analytics.middlewares.captcha import detect_captcha, handle_captcha
+
+        # 1. captcha 检测
+        captcha_result = detect_captcha(self.dp)
+        if captcha_result["is_captcha"]:
+            handle_captcha(self.dp, url, self.batch_id, captcha_result)
+            return "skip"
+
+        # 2. ban 检测
+        ban_result = detect_ban_response(self.dp)
+        if ban_result["is_banned"]:
+            action = handle_ban(
+                self.dp, url, self.batch_id, ban_result,
+                retry_count=0, max_retries=3,
+            )
+            return "skip" if action == "skip" else "wait_retry"
+
+        return "ok"
 
     def _check_login_state(self) -> bool:
         """检查当前是否已登录（pin cookie 存在且未过期）"""

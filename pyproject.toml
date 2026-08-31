@@ -25,6 +25,12 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.4",
 ]
+ocr = [
+    # OCR 路线（可选，spec F001-ocr-route）
+    # paddleocr + paddlepaddle 较重，按需安装：pip install -e ".[ocr]"
+    "paddleocr>=3.0",
+    "paddlepaddle>=3.0",
+]
 
 [project.scripts]
 jd-collect = "jd_analytics.cli:collect"
