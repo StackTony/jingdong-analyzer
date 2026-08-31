@@ -27,10 +27,10 @@ CONCURRENT_REQUESTS = 1               # 单并发，串行抓取
 # CONCURRENT_REQUESTS_PER_IP 在 Scrapy 2.18 已废弃
 DOWNLOAD_DELAY = 2                    # 基础 2 秒延迟 + AutoThrottle 自适应
 
-# 单 IP 日请求上限（铲屎官要求"降低爬取速度防封"）
+# 单 IP 日请求上限（铲屎官要求"时间放长一点"防封）
 # JD_Spider 199 页 × 60 商品 + 评论 API = 约 12000 请求/品类
-# 单 IP 日阈值经验值 1000-3000，保守取 1500
-DAILY_LIMIT_PER_IP = int(os.getenv("DAILY_LIMIT_PER_IP", "1500"))
+# 单 IP 日阈值经验值 1000-3000，试爬保守取 800（从 1500 降）
+DAILY_LIMIT_PER_IP = int(os.getenv("DAILY_LIMIT_PER_IP", "800"))
 
 # ===== 重试 =====
 RETRY_TIMES = 3

@@ -251,13 +251,14 @@ class OcrSpider(DrissionSpider):
                 break
 
             page += 1
-            # 单 IP 慢爬防封：每页间 sleep + 随机抖动
+            # 单 IP 慢爬防封：每页间 sleep + 随机抖动（CVO 要求"时间放长一点"）
+            # 长停留概率 5% → 10%，时长 10-20s → 15-30s
             import random
-            if random.random() < 0.05:
-                sleep_sec = random.uniform(10.0, 20.0)
-                logger.info(f"  long pause {sleep_sec:.1f}s (5% chance, 仿真阅读)")
+            if random.random() < 0.10:
+                sleep_sec = random.uniform(15.0, 30.0)
+                logger.info(f"  long pause {sleep_sec:.1f}s (10% chance, 仿真阅读)")
             else:
-                sleep_sec = self.page_sleep_seconds + random.uniform(0, 3.0)
+                sleep_sec = self.page_sleep_seconds + random.uniform(0, 4.0)
                 logger.info(f"  sleep {sleep_sec:.1f}s between pages")
             time.sleep(sleep_sec)
 
@@ -448,8 +449,8 @@ def main():
         "--headless", action="store_true", help="无头模式"
     )
     parser.add_argument(
-        "--page-sleep", type=float, default=3.0,
-        help="每页之间 sleep 秒数（默认 3.0，单 IP 慢爬防封）",
+        "--page-sleep", type=float, default=6.0,
+        help="每页之间 sleep 秒数（默认 6.0，CVO 要求时间放长防封）",
     )
     parser.add_argument(
         "--manual-login", action="store_true",
