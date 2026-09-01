@@ -36,13 +36,14 @@ class FakePlanGenerator(AIPlanGenerator):
             # 兜底：从 question 简单推断
             intent = self._guess_intent(question)
 
-        # 取数据列，猜测 value_col / group_by
+        # 取数据列，猜测 value_col / group_by / time_col
         cols = list(dataset.df.columns)
         value_col = self._pick_value_col(dataset.df, cols)
         group_by = self._pick_group_col(dataset.df, cols)
+        time_col = self._pick_time_col(dataset.df, cols)
 
         plan_id = f"fake-{uuid4().hex[:8]}"
-        steps = self._build_steps(intent, group_by, value_col)
+        steps = self._build_steps(intent, group_by, value_col, time_col)
 
         return Plan(
             plan_id=plan_id,
@@ -91,7 +92,31 @@ class FakePlanGenerator(AIPlanGenerator):
                 return [c]
         return [cols[0]] if cols else ["_group"]
 
-    def _build_steps(self, intent: str, group_by: list[str], value_col: str) -> list[Step]:
+    def _pick_time_col(self, df: pd.DataFrame, cols: list[str]) -> str | None:
+        """选 datetime 列作 time_col（外部 AI P2 修复）
+
+        原_bug：_build_steps 把 group_by[0]（文本列）当 time_col 传给 model.trend，
+        set_index().resample() 必失败。
+        修法：识别 datetime 列；找不到返回 None（调用方应退化到 aggregate）。
+        """
+        for c in cols:
+            if pd.api.types.is_datetime64_any_dtype(df[c]):
+                return c
+        # 尝试常见列名
+        for c in cols:
+            if any(k in c.lower() for k in ("date", "month", "time")):
+                # 尝试 parse
+                try:
+                    pd.to_datetime(df[c])
+                    return c
+                except (ValueError, TypeError):
+                    continue
+        return None
+
+    def _build_steps(
+        self, intent: str, group_by: list[str], value_col: str,
+        time_col: str | None = None,
+    ) -> list[Step]:
         if intent == "TopN 趋势分析":
             return [
                 Step(op="clean.normalize_text", args={"columns": group_by, "ops": ["trim", "lower"]}),
@@ -107,10 +132,15 @@ class FakePlanGenerator(AIPlanGenerator):
                 }),
             ]
         if intent == "趋势分析":
-            # 趋势需要时间列；fake 假设 df 含 month/date 等
+            # 外部 AI P2 修复：需要 datetime 列作 time_col
+            # 无 datetime 列时退化到 aggregate（不生成必失败的 trend step）
+            if time_col is None:
+                return [
+                    Step(op="model.aggregate", args={"group_by": group_by, "agg": {value_col: "sum"}}),
+                ]
             return [
                 Step(op="model.trend", args={
-                    "time_col": group_by[0] if group_by else "month",
+                    "time_col": time_col,
                     "value_col": value_col, "freq": "M",
                 }),
             ]

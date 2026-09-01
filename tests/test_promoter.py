@@ -234,3 +234,35 @@ def test_scan_and_promote_finds_all_promotable(promoter, library):
     promoted = promoter.scan_and_promote()
     assert len(promoted) == 1
     assert library.load_template(promoted[0]) is not None
+
+
+# ===== P4: scan_and_promote 不应重复报告已晋升模板（幂等） =====
+
+def test_scan_and_promote_idempotent_no_duplicates(promoter, library):
+    """scan_and_promote 重复调用不应重复报告已晋升的模板
+
+    外部 AI P4 finding：promote() 幂等命中旧模板返回 template_id，
+    scan_and_promote 不区分"新晋升" vs "幂等命中"全 append，导致
+    CLI `flow scan-promote` 重复打印已晋升模板。
+
+    修法：scan_and_promote 只返回本次新晋升的（不包含幂等命中的）。
+    """
+    # Plan A: 3 次成功，可晋升
+    library.save_plan(Plan(plan_id="a", intent="X", schema_fingerprint="fp_a", steps=[]))
+    for _ in range(3):
+        library.save_run(_run_record("fp_a", "X", success=True, plan_id="a"))
+
+    # 第一次扫描：应晋升 1 个
+    first = promoter.scan_and_promote()
+    assert len(first) == 1
+
+    # 第二次扫描：不应重复报告（无新增）
+    second = promoter.scan_and_promote()
+    assert len(second) == 0, (
+        f"scan_and_promote 重复扫描应返回空列表（无新晋升），"
+        f"实际返回 {second}（P4 幂等报告 bug）"
+    )
+
+    # 第三次：仍然 0（确认幂等稳定）
+    third = promoter.scan_and_promote()
+    assert len(third) == 0

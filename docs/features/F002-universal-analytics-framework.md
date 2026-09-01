@@ -28,6 +28,7 @@ reviewers:
 | 2026-08-31 | 本地 merge feat → main（merge commit 57e454f，铲屎官授权绕过 merge-gate） |
 | 2026-08-31 | push origin/main（57e454f） |
 | 2026-08-31 | P2-1 同模式漏网修复：`llm_reviewer.py:40` 硬编码 max_tokens=2000 → 读 `provider.config.max_tokens`（feat/f002-reviewer-max-tokens，TDD 红绿，211 passed 无回归） |
+| 2026-08-31 | 外部 AI review P1-P4 修复：模板列名变量化（P1+P3）+ FakePlanGenerator 趋势用 datetime 列（P2）+ scan-promote 幂等报告（P4）。P5 记入 BACKLOG 候选（feat/f002-review-fixes，TDD 红绿，218 passed 无回归） |
 
 ## Why
 

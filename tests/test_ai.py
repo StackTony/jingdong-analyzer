@@ -193,3 +193,72 @@ def test_end_to_end_fallback_generate_execute_review():
     assert "## 异常解释" in report
     assert "## 趋势点睛" in report
     assert "## 建议下一步" in report
+
+
+# ===== P2: FakePlanGenerator 趋势 Plan 应用 datetime 列作 time_col =====
+# 外部 AI P2 finding：_build_steps 对"趋势分析"意图把 group_by[0]（文本列）
+# 当 time_col 传入 model.trend，导致 set_index().resample() 失败、0 步成功。
+# 修法：识别 datetime 列作 time_col，找不到时退化到 aggregate 兜底。
+
+def test_fake_plan_generator_trend_uses_datetime_col_as_time_col():
+    """趋势分析 Plan 的 time_col 应是 datetime 列，不是文本 group_by 列
+
+    外部 AI P2：原 _build_steps 把 group_by[0]（文本）当 time_col，
+    model.trend set_index().resample() 必失败。
+    """
+    gen = FakePlanGenerator()
+    # 数据含 datetime 列 + 文本列 + 数值列
+    df = pd.DataFrame({
+        "month": pd.date_range("2026-01-01", periods=5, freq="ME"),
+        "brand": ["a", "b", "c", "d", "e"],
+        "sales": [100, 200, 150, 180, 220],
+    })
+    ds = Dataset(df=df, schema_fingerprint=compute_fingerprint(df))
+
+    plan = gen.generate("趋势分析", ds, intent="趋势分析")
+
+    # 找到 trend step
+    trend_step = next((s for s in plan.steps if s.op == "model.trend"), None)
+    assert trend_step is not None, f"应有 model.trend step，实际 steps: {plan.steps}"
+    # time_col 应是 month（datetime 列），不是 brand（文本列）
+    assert trend_step.args["time_col"] == "month", (
+        f"time_col 应是 datetime 列 'month'，实际传了 {trend_step.args['time_col']}"
+    )
+
+
+def test_fake_plan_generator_trend_executes_successfully_with_datetime():
+    """趋势分析 Plan 在含 datetime 列的数据上应执行成功（≥1 步 ok）"""
+    from clowder_analytics.orchestrator.executor import execute
+    gen = FakePlanGenerator()
+    df = pd.DataFrame({
+        "month": pd.date_range("2026-01-01", periods=5, freq="ME"),
+        "brand": ["a", "b", "c", "d", "e"],
+        "sales": [100, 200, 150, 180, 220],
+    })
+    ds = Dataset(df=df, schema_fingerprint=compute_fingerprint(df))
+
+    plan = gen.generate("趋势分析", ds, intent="趋势分析")
+    result = execute(plan, ds)
+    ok_steps = [s for s in result.log if s.get("ok")]
+    assert len(ok_steps) > 0, (
+        f"趋势分析 Plan 应至少有 1 步成功，实际 log: {result.log}"
+    )
+
+
+def test_fake_plan_generator_trend_fallback_when_no_datetime():
+    """无 datetime 列时，趋势分析应退化到 aggregate（不生成必失败的 trend step）"""
+    gen = FakePlanGenerator()
+    # 无 datetime 列，只有文本 + 数值
+    df = pd.DataFrame({
+        "brand": ["a", "b", "c"],
+        "sales": [100, 200, 50],
+    })
+    ds = Dataset(df=df, schema_fingerprint=compute_fingerprint(df))
+
+    plan = gen.generate("趋势分析", ds, intent="趋势分析")
+    # 不应生成 model.trend step（会失败）；应退化到 aggregate
+    trend_step = next((s for s in plan.steps if s.op == "model.trend"), None)
+    assert trend_step is None, (
+        f"无 datetime 列时不应生成 trend step（会失败），"
+        f"应退化到 aggregate，实际 steps: {plan.steps}"
+    )

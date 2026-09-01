@@ -9,6 +9,11 @@
 6. fallback 生成的 Plan 也存 plans/ 供下次复用
 7. scan_and_promote() 检查晋升机会
 
+A 轨模板变量化（外部 AI P1 修复）：
+- 模板 args 支持 {{numeric_col}} / {{group_col}} / {{time_col}} 占位符
+- 命中模板后 resolve_template_variables(tpl, ds) 注入 dataset 实际列名
+- 不匹配则返回 None（router 应判未命中走 B/fallback）
+
 返回 RunResult（扩展含 matched_template_id / matched_plan_id / llm_calls）
 
 设计依据：spec §6.2 / §7.1 / §7.5 / AC-6 / AC-11
@@ -19,15 +24,152 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import pandas as pd
+
 from clowder_analytics.adapters.base import Dataset
 from clowder_analytics.ai.base import AIPlanGenerator, AIReviewer
 from clowder_analytics.ai.fake import FakePlanGenerator, FakeReviewer
-from clowder_analytics.flow_library.models import RunRecord
+from clowder_analytics.flow_library.models import RunRecord, Template
 from clowder_analytics.flow_library.promoter import Promoter
 from clowder_analytics.flow_library.store import FlowLibrary
 from clowder_analytics.orchestrator.executor import execute
-from clowder_analytics.orchestrator.plan import Plan, RunResult
+from clowder_analytics.orchestrator.plan import Plan, RunResult, Step
 from clowder_analytics.orchestrator.router import Route, route
+
+
+# ===== 模板列名变量解析（外部 AI P1 修复） =====
+
+# 占位符 → 选择函数
+_PLACEHOLDER_PATTERNS = (
+    "{{numeric_col}}", "{{group_col}}", "{{time_col}}", "{{category_col}}",
+)
+
+
+def _pick_numeric_col(df: pd.DataFrame) -> str | None:
+    """选数值列（偏好 sales/price/count/amount/value/qty）"""
+    hints = ["sales", "price", "count", "amount", "value", "qty", "金额", "销售额"]
+    cols = list(df.columns)
+    for h in hints:
+        for c in cols:
+            if h in str(c).lower() and pd.api.types.is_numeric_dtype(df[c]):
+                return c
+    # 兜底：第一个数值列
+    for c in cols:
+        if pd.api.types.is_numeric_dtype(df[c]):
+            return c
+    return None
+
+
+def _pick_group_col(df: pd.DataFrame) -> str | None:
+    """选文本列（偏好 brand/name/产品/品牌）"""
+    hints = ["brand", "name", "产品", "品牌", "label"]
+    cols = list(df.columns)
+    for h in hints:
+        for c in cols:
+            if h in str(c).lower() and not pd.api.types.is_numeric_dtype(df[c]):
+                return c
+    # 兜底：第一个非数值列
+    for c in cols:
+        if not pd.api.types.is_numeric_dtype(df[c]):
+            return c
+    return None
+
+
+def _pick_category_col(df: pd.DataFrame) -> str | None:
+    """选品类列（偏好 category/cat/品类）—— 用于"品类对比" intent"""
+    hints = ["category", "cat", "品类", "类别", "分类"]
+    cols = list(df.columns)
+    for h in hints:
+        for c in cols:
+            if h in str(c).lower() and not pd.api.types.is_numeric_dtype(df[c]):
+                return c
+    # 兜底：回退到通用 group_col
+    return _pick_group_col(df)
+
+
+def _pick_time_col(df: pd.DataFrame) -> str | None:
+    """选 datetime 列"""
+    for c in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[c]):
+            return c
+    # 尝试 parse 常见列名
+    for c in df.columns:
+        if any(k in str(c).lower() for k in ("date", "month", "时间", "日期")):
+            return c
+    return None
+
+
+def _resolve_value(placeholder: str, dataset: Dataset) -> str:
+    """把单个占位符解析为实际列名，找不到抛 ValueError"""
+    if placeholder == "{{numeric_col}}":
+        col = _pick_numeric_col(dataset.df)
+        if col is None:
+            raise ValueError("dataset 无数值列，无法解析 {{numeric_col}}")
+        return col
+    if placeholder == "{{group_col}}":
+        col = _pick_group_col(dataset.df)
+        if col is None:
+            raise ValueError("dataset 无文本列，无法解析 {{group_col}}")
+        return col
+    if placeholder == "{{category_col}}":
+        col = _pick_category_col(dataset.df)
+        if col is None:
+            raise ValueError("dataset 无品类列，无法解析 {{category_col}}")
+        return col
+    if placeholder == "{{time_col}}":
+        col = _pick_time_col(dataset.df)
+        if col is None:
+            raise ValueError("dataset 无 datetime 列，无法解析 {{time_col}}")
+        return col
+    return placeholder
+
+
+def _resolve_args(args: Any, dataset: Dataset) -> Any:
+    """递归解析 args 中的占位符（dict key+value / list / str）
+
+    注意：dict 的 key 也可能是占位符（如 agg: {"{{numeric_col}}": "sum"}），
+    必须同时解析 key 和 value。
+    """
+    if isinstance(args, str):
+        if args in _PLACEHOLDER_PATTERNS:
+            return _resolve_value(args, dataset)
+        return args
+    if isinstance(args, list):
+        return [_resolve_args(x, dataset) for x in args]
+    if isinstance(args, dict):
+        # key 和 value 都递归解析
+        return {
+            _resolve_args(k, dataset) if isinstance(k, str) else k: _resolve_args(v, dataset)
+            for k, v in args.items()
+        }
+    return args
+
+
+def resolve_template_variables(template: Template, dataset: Dataset) -> Template:
+    """把模板 steps 里的 {{numeric_col}} / {{group_col}} / {{time_col}} 解析为实际列名
+
+    外部 AI P1 修复：模板 schema_fingerprint='*' 通配任意数据源，
+    但 args 硬编码 sales/brand 列名导致命中后失败。
+    修法：模板用占位符，本函数注入 dataset 实际列名。
+
+    返回新 Template 对象（不修改原对象），steps 已替换占位符。
+    """
+    new_steps = [
+        Step(op=s.op, args=_resolve_args(s.args, dataset)) for s in template.steps
+    ]
+    # 返回新 Template（保留原元信息）
+    return Template(
+        template_id=template.template_id,
+        intent=template.intent,
+        schema_fingerprint=template.schema_fingerprint,
+        steps=new_steps,
+        reviewer_enabled=template.reviewer_enabled,
+        fallback_strategy=template.fallback_strategy,
+        created_at=template.created_at,
+        promoted_from_plan_id=template.promoted_from_plan_id,
+        stability=template.stability,
+        confidence=template.confidence,
+    )
 
 
 @dataclass
@@ -88,7 +230,9 @@ def run(
 
     # 取 Plan
     if r.kind == "A" and r.template is not None:
-        plan = Plan.from_dict(r.template.to_plan_dict())
+        # 外部 AI P1 修复：模板变量化——命中后注入 dataset 实际列名
+        resolved_tpl = resolve_template_variables(r.template, dataset)
+        plan = Plan.from_dict(resolved_tpl.to_plan_dict())
         matched_template_id = r.template.template_id
     elif r.kind == "B" and r.plan is not None:
         plan = r.plan

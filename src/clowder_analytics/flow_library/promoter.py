@@ -152,7 +152,16 @@ class Promoter:
         """扫描所有 (fp, intent, plan_id) 组合，晋升满足条件的 Plan
 
         用于定期触发（如 CLI `jd-analyze flow scan-promote`）。
+
+        幂等性（外部 AI P4 修复）：重复扫描只返回本次新晋升的 template_id，
+        不包含幂等命中的旧模板。实现方式：对比扫描前后的 templates 集合。
         """
+        # 记录扫描前已存在的 template_id 集合
+        pre_template_ids = {
+            t.template_id for t in self.library.list_templates()
+            if t.stability != "deprecated"
+        }
+
         # 收集所有 (fp, intent, plan_id) 组合
         # spec §7.3 路径1"命中执行 ≥ N 次"不区分路由——A/B/fallback 都算命中
         # 关羽 P2-2 修复：原过滤 r.route == "B" 漏 fallback 路径
@@ -161,10 +170,13 @@ class Promoter:
             if r.matched_plan_id:
                 combos.add((r.schema_fingerprint, r.intent, r.matched_plan_id))
 
-        promoted_ids: list[str] = []
         for fp, intent, plan_id in combos:
-            tpl_id = self.promote(fp, intent, plan_id)
-            if tpl_id:
-                # 新晋升的（不是幂等返回的旧模板）才加入
-                promoted_ids.append(tpl_id)
-        return promoted_ids
+            self.promote(fp, intent, plan_id)
+
+        # 对比扫描后：只返回本次新增的 template_id
+        post_template_ids = {
+            t.template_id for t in self.library.list_templates()
+            if t.stability != "deprecated"
+        }
+        new_ids = list(post_template_ids - pre_template_ids)
+        return new_ids
