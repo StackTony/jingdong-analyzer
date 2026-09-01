@@ -24,6 +24,8 @@ created: 2026-08-25
 - [x] **外部 AI P2**: FakePlanGenerator 趋势 Plan 用错时间列 → 新增 `_pick_time_col`，无 datetime 时退化到 aggregate（feat/f002-review-fixes，TDD 红绿）
 - [x] **外部 AI P3**: 品类对比模板按 brand 聚合 → 改用 `{{category_col}}`，新增 `_pick_category_col` 偏好 category 列（feat/f002-review-fixes）
 - [x] **外部 AI P4**: scan-promote 重复报告 → `scan_and_promote` 对比前后 templates 集合差，只返回新增（feat/f002-review-fixes，TDD 红绿）
+- [x] **外部 AI P1-1 (B方案)**: ChartSpec.data 改 DataFrame 引用 + `to_json(max_rows=1000)` 惰性序列化，避免 33 万行 to_dict 占 +399MB 内存（feat/f002-chart-spec-arch，TDD 红绿，223 passed 无回归）
+- [x] **外部 AI P1-2**: modeler.trend 内置 `pd.to_datetime` 预处理，字符串日期列自动转，无法解析抛 ValueError（feat/f002-chart-spec-arch）
 - [ ] **外部 AI P5**: B 轨匹配依赖 intent 分类（未分类 intent=None 时跳过 B 轨）。符合当前规则分类器设计，**不改，记入候选**——P7+ 可考虑未分类问题的模糊匹配（embedding 相似度）
 - [ ] **AC-1 Postgres**: 补 `PostgresAdapter`（接生产 DB 时实现，MVP 未需要）
 - [ ] **OQ-1 op_spec 漂移**: 12 op 手写维护 + 抽样测试够；P7+ 上 pydantic/introspect 自动同步 op 函数签名
