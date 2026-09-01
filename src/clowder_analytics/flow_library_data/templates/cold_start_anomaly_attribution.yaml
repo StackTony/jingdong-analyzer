@@ -5,14 +5,14 @@ steps:
 - op: clean.normalize_text
   args:
     columns:
-    - brand
+    - '{{group_col}}'
     ops:
     - trim
 - op: model.anomaly_attribution
   args:
-    value_col: sales
+    value_col: '{{numeric_col}}'
     group_by:
-    - brand
+    - '{{group_col}}'
     baseline: mean
 reviewer_enabled: true
 fallback_strategy: abort_on_first_error
