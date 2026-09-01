@@ -355,7 +355,7 @@ def test_llm_reviewer_prompt_includes_charts():
     ds = _make_dataset(df)
     mock = MockProvider(["报告"])
     reviewer = LLMReviewer(provider=mock)
-    chart = ChartSpec(type="bar", data={}, title="TopN", x="brand", y="sales")
+    chart = ChartSpec(type="bar", data=pd.DataFrame(), title="TopN", x="brand", y="sales")
     reviewer.review(ds, charts=[chart], run_log=[])
     user_msg = mock.last_messages[1]["content"]
     assert "bar" in user_msg
