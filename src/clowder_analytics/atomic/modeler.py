@@ -9,6 +9,14 @@
 - anomaly_attribution: 异常归因（vs baseline）
 
 接口约定：f(df, **args) -> (df_or_result, ChartSpec)
+
+B 方案架构改动（外部 AI P1-1 修复）：
+- ChartSpec.data 存 DataFrame 引用（不立即 to_dict）
+- 调用方调 chart.to_json(max_rows) 惰性序列化
+
+P1-2 修复：
+- trend op 内置 pd.to_datetime 预处理，字符串日期列自动转
+- 无法解析时抛 ValueError（而非 set_index().resample() 的 TypeError）
 """
 from __future__ import annotations
 
@@ -31,7 +39,7 @@ def aggregate(
     out = df.groupby(group_by, as_index=False).agg(agg)
     chart = ChartSpec(
         type="bar",
-        data=out.to_dict("records"),
+        data=out,
         title=f"Aggregate by {','.join(group_by)}",
         x=group_by[0],
         y=list(agg.keys()),
@@ -55,7 +63,7 @@ def topn(
         raise ValueError(f"未知 rank_by: {rank_by}")
     chart = ChartSpec(
         type="bar",
-        data=out.to_dict("records"),
+        data=out,
         title=f"Top {n} by {value_col}",
         x=group_by[0],
         y=value_col,
@@ -74,11 +82,25 @@ def trend(
     """时序聚合（按 freq 重采样求和）
 
     freq: pandas offset alias, e.g. "M" month, "W" week, "D" day
+
+    P1-2 修复：字符串日期列自动 pd.to_datetime 转换，
+    无法解析时抛 ValueError（而非 set_index().resample() 的 TypeError）。
     """
     # pandas 2.2+ 弃用 "M" 改 "ME"；接受用户传入两种
     freq_normalized = freq
     if freq == "M":
         freq_normalized = "ME"
+
+    # P1-2：time_col 不是 datetime 时尝试转换
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        try:
+            df = df.copy()
+            df[time_col] = pd.to_datetime(df[time_col])
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"trend op 的 time_col '{time_col}' 无法解析为 datetime：{e}"
+            ) from e
+
     out = (
         df.set_index(time_col)
         .resample(freq_normalized)[value_col]
@@ -87,7 +109,7 @@ def trend(
     )
     chart = ChartSpec(
         type="line",
-        data=out.to_dict("records"),
+        data=out,
         title=f"Trend by {freq}",
         x=time_col,
         y=value_col,
@@ -106,7 +128,7 @@ def correlation(
     out = df[columns].corr(method=method)
     chart = ChartSpec(
         type="heatmap",
-        data=out.to_dict(),
+        data=out,
         title=f"Correlation ({method})",
         x=columns,
         y=columns,
@@ -140,7 +162,7 @@ def cluster(
     out["cluster"] = labels
     chart = ChartSpec(
         type="scatter",
-        data=out.to_dict("records"),
+        data=out,
         title=f"KMeans k={k}",
         x=columns[0],
         y=columns[1] if len(columns) > 1 else "",
@@ -168,7 +190,7 @@ def anomaly_attribution(
     out["deviation_pct"] = (out["deviation"] / base * 100).round(2) if base else 0
     chart = ChartSpec(
         type="bar",
-        data=out.to_dict("records"),
+        data=out,
         title=f"Anomaly vs {baseline}",
         x=group_by[0],
         y="deviation",

@@ -33,29 +33,26 @@ def render(chart_spec: ChartSpec, mode: str = "static") -> Any:
         ) from e
 
     t = chart_spec.type
-    data = chart_spec.data
+    # B 方案：ChartSpec.data 已是 DataFrame，直接用
+    df = chart_spec.data
 
     if t == "bar":
-        df = pd.DataFrame(data)
         fig = go.Figure([go.Bar(x=df[chart_spec.x], y=df[chart_spec.y])])
         fig.update_layout(title=chart_spec.title)
         return fig
 
     if t == "line":
-        df = pd.DataFrame(data)
         fig = go.Figure([go.Scatter(x=df[chart_spec.x], y=df[chart_spec.y], mode="lines+markers")])
         fig.update_layout(title=chart_spec.title)
         return fig
 
     if t == "scatter":
-        df = pd.DataFrame(data)
         fig = go.Figure([go.Scatter(x=df[chart_spec.x], y=df[chart_spec.y], mode="markers")])
         fig.update_layout(title=chart_spec.title)
         return fig
 
     if t == "heatmap":
-        # heatmap data 形如 {"col_a": {"col_a": 1.0, "col_b": 0.5}, ...}
-        df = pd.DataFrame(data)
+        # correlation 返回的 DataFrame 索引和列都是 columns 列表
         fig = go.Figure(data=go.Heatmap(
             z=df.values,
             x=list(df.columns),
