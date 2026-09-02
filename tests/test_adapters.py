@@ -144,3 +144,55 @@ def test_sqlite_adapter_with_query(sample_sqlite: Path):
     })
     assert len(ds.df) == 1
     assert ds.df.iloc[0]["brand"] == "华为"
+
+
+# ===== G1: max_rows 采样加载（大数据量优化，避免 OOM）=====
+
+@pytest.fixture
+def big_csv(tmp_path: Path) -> Path:
+    """1000 行 CSV，模拟大数据量场景"""
+    df = pd.DataFrame({
+        "brand": [f"brand_{i}" for i in range(1000)],
+        "sales": list(range(1000)),
+    })
+    path = tmp_path / "big.csv"
+    df.to_csv(path, index=False, encoding="utf-8")
+    return path
+
+
+def test_csv_adapter_max_rows_samples_head(big_csv: Path):
+    """max_rows=N 只加载前 N 行，不全量读"""
+    ds = CsvAdapter().load({"path": str(big_csv), "max_rows": 50})
+    assert len(ds.df) == 50
+    assert ds.metadata["row_count"] == 50
+    assert ds.metadata["sampled"] is True
+    assert ds.metadata["full_row_count"] == 1000
+
+
+def test_csv_adapter_no_max_rows_loads_full(big_csv: Path):
+    """不传 max_rows 时全量读（向后兼容）"""
+    ds = CsvAdapter().load({"path": str(big_csv)})
+    assert len(ds.df) == 1000
+    assert ds.metadata.get("sampled", False) is False
+
+
+def test_excel_adapter_max_rows_samples(tmp_path: Path):
+    """Excel 也支持 max_rows 采样"""
+    df = pd.DataFrame({"brand": [f"b{i}" for i in range(500)], "sales": list(range(500))})
+    path = tmp_path / "big.xlsx"
+    df.to_excel(path, index=False)
+    ds = ExcelAdapter().load({"path": str(path), "max_rows": 100})
+    assert len(ds.df) == 100
+    assert ds.metadata["sampled"] is True
+    assert ds.metadata["full_row_count"] == 500
+
+
+def test_sqlite_adapter_max_rows_samples(sample_sqlite: Path):
+    """SQLite 支持 max_rows 采样"""
+    ds = SqliteAdapter().load({
+        "conn_str": f"sqlite:///{sample_sqlite}",
+        "table": "products",
+        "max_rows": 1,
+    })
+    assert len(ds.df) == 1
+    assert ds.metadata["sampled"] is True

@@ -80,3 +80,24 @@ def test_web_app_load_unsupported_type(tmp_path):
             ds = _load_uploaded_file(FakeUpload())
             assert ds is None
             mock_err.assert_called_once()
+
+
+# ===== G3: web app render 路径走 max_rows 采样（B 方案闭环）=====
+
+def test_web_app_render_chart_uses_max_rows_sampling():
+    """_render_chart 抽出辅助函数，内置 max_rows 采样，
+    避免 33 万行 DataFrame 直接喂 plotly 卡浏览器"""
+    from clowder_analytics.web.app import _render_chart
+    from clowder_analytics.atomic.spec import ChartSpec
+
+    # 大 DataFrame（1000 行），_render_chart 应采样到 max_rows=50
+    df = pd.DataFrame({"brand": [f"b{i}" for i in range(1000)], "sales": list(range(1000))})
+    spec = ChartSpec(type="bar", data=df, x="brand", y="sales")
+
+    with patch("streamlit.plotly_chart") as mock_plotly:
+        _render_chart(spec)
+        # 被调了一次
+        assert mock_plotly.call_count == 1
+        fig = mock_plotly.call_args.args[0]
+        # 采样后只喂 50 行（默认 max_rows）
+        assert len(fig.data[0].x) == 50
