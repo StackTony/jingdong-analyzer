@@ -149,6 +149,120 @@ def test_load_provider_default_is_csi(monkeypatch):
     assert p.config.name == "csi"
 
 
+# ===== 多 provider 多 model 配置（G13 通用 LLM 对接）=====
+
+# 新 yaml 格式：providers.<name>.models.<model_id> 多 model 结构
+_MULTI_PROVIDER_YAML = """
+default_provider: glm
+
+providers:
+  glm:
+    name: Zhipu GLM
+    base_url: http://76.53.227.83:4000/v1/
+    api_key_env: GLM_API_KEY
+    protocol: openai
+    timeout_seconds: 120
+    default_model: glm-5.2
+    models:
+      glm-5.2:
+        name: GLM-5.2
+        max_tokens: 4000
+        temperature: 0.3
+
+  euler-y:
+    name: Huawei Euler-Y
+    base_url: https://aigateway.csitool.rnd.huawei.com/v1/
+    api_key_env: EULER_Y_API_KEY
+    protocol: openai
+    timeout_seconds: 120
+    models:
+      Qwen3.5-122B-A10B:
+        name: Qwen3.5-122B-A10B
+        max_tokens: 4000
+      Deepseek-V4-Flash:
+        name: Deepseek-V4-Flash
+      MiniMax-M2.7:
+        name: MiniMax-2.7
+"""
+
+
+@pytest.fixture
+def multi_provider_yaml(tmp_path, monkeypatch):
+    """写新格式 yaml 到临时文件，patch 配置路径"""
+    cfg = tmp_path / "ai_providers.yaml"
+    cfg.write_text(_MULTI_PROVIDER_YAML, encoding="utf-8")
+    import clowder_analytics.ai.llm_provider as mod
+    monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
+    return cfg
+
+
+def test_load_provider_multi_model_selects_specified_model(multi_provider_yaml, monkeypatch):
+    """load_provider(name, model=...) 选 provider 下指定 model"""
+    monkeypatch.setenv("GLM_API_KEY", "sk-glm-test")
+    p = load_provider("glm", model="glm-5.2")
+    assert p.config.model == "glm-5.2"
+    assert p.config.max_tokens == 4000
+
+
+def test_load_provider_multi_model_different_model_in_same_provider(multi_provider_yaml, monkeypatch):
+    """同一 provider 下选不同 model"""
+    monkeypatch.setenv("EULER_Y_API_KEY", "sk-euler-test")
+    p = load_provider("euler-y", model="Deepseek-V4-Flash")
+    assert p.config.model == "Deepseek-V4-Flash"
+    # Deepseek-V4-Flash 没写 max_tokens，用默认
+    assert p.config.max_tokens == 2000
+
+
+def test_load_provider_default_model_when_not_specified(multi_provider_yaml, monkeypatch):
+    """不传 model 时取 default_model 字段"""
+    monkeypatch.setenv("GLM_API_KEY", "sk-glm-test")
+    p = load_provider("glm")
+    assert p.config.model == "glm-5.2"
+
+
+def test_load_provider_first_model_when_no_default(multi_provider_yaml, monkeypatch):
+    """没 default_model 字段时取 models 第一个（euler-y 没 default_model）"""
+    monkeypatch.setenv("EULER_Y_API_KEY", "sk-euler-test")
+    p = load_provider("euler-y")
+    # models dict 顺序：Qwen3.5-122B-A10B 在前
+    assert p.config.model == "Qwen3.5-122B-A10B"
+
+
+def test_load_provider_unknown_model_raises(multi_provider_yaml, monkeypatch):
+    """provider 存在但 model 不存在时报错"""
+    monkeypatch.setenv("GLM_API_KEY", "sk-glm-test")
+    with pytest.raises(KeyError) as e:
+        load_provider("glm", model="nonexistent-model")
+    assert "nonexistent-model" in str(e.value)
+
+
+def test_load_provider_backcompat_old_single_model_format(monkeypatch, tmp_path):
+    """向后兼容：老格式 providers.csi.model 顶层单 model 仍工作"""
+    old_yaml = """
+default_provider: csi
+providers:
+  csi:
+    name: csi.ai
+    base_url: http://localhost:8080/v1/
+    api_key_env: CSI_API_KEY
+    model: GLM-5.2
+    protocol: openai
+    temperature: 0.3
+    max_tokens: 4000
+    timeout_seconds: 120
+"""
+    cfg = tmp_path / "old.yaml"
+    cfg.write_text(old_yaml, encoding="utf-8")
+    import clowder_analytics.ai.llm_provider as mod
+    monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
+    monkeypatch.setenv("CSI_API_KEY", "sk-test")
+    p = load_provider("csi")
+    assert p.config.model == "GLM-5.2"
+    assert p.config.max_tokens == 4000
+
+
 # ===== LLMPlanGenerator（用 mock provider） =====
 
 class MockProvider(LLMProvider):

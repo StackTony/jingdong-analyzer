@@ -122,19 +122,24 @@ def _load_yaml_config() -> dict[str, Any]:
     return _CONFIG_CACHE
 
 
-def load_provider(name: str | None = None) -> LLMProvider:
+def load_provider(name: str | None = None, model: str | None = None) -> LLMProvider:
     """按配置加载 provider
 
     Args:
         name: provider 名（None 取 default_provider）
+        model: provider 下的 model id（None 取 default_model 或第一个 model）
 
     Returns:
         LLMProvider 实例
 
     Raises:
-        KeyError: provider 名不存在
+        KeyError: provider 名不存在 / model 不存在
         RuntimeError: apiKey 环境变量未设
-        NotImplementedError: openai SDK 未装
+        NotImplementedError: openai SDK 未装 / 未知 protocol
+
+    支持两种 yaml 格式：
+    - 新格式（多 model）：providers.<name>.models.<model_id> map 结构
+    - 老格式（单 model）：providers.<name>.model 顶层字段（向后兼容）
     """
     cfg = _load_yaml_config()
     if name is None:
@@ -152,20 +157,61 @@ def load_provider(name: str | None = None) -> LLMProvider:
             f"请 export {api_key_env}=sk-xxx 后重试。"
         )
 
+    # 解析 model 配置（支持新格式 models map + 老格式顶层 model）
+    model_id, model_cfg = _resolve_model(p, model)
+
     config = ProviderConfig(
         name=name,
         base_url=p["base_url"],
         api_key=api_key,
-        model=p["model"],
+        model=model_id,
         protocol=p.get("protocol", "openai"),
-        temperature=p.get("temperature", 0.3),
-        max_tokens=p.get("max_tokens", 2000),
+        temperature=model_cfg.get("temperature", p.get("temperature", 0.3)),
+        max_tokens=model_cfg.get("max_tokens", p.get("max_tokens", 2000)),
         timeout_seconds=p.get("timeout_seconds", 60),
     )
 
     if config.protocol == "openai":
         return OpenAICompatibleProvider(config)
     raise NotImplementedError(f"未知 protocol: {config.protocol}")
+
+
+def _resolve_model(provider_cfg: dict, requested_model: str | None) -> tuple[str, dict]:
+    """从 provider 配置解析 model_id 和 model 配置
+
+    新格式：providers.<name>.models.<model_id> map 结构（支持多 model）
+    老格式：providers.<name>.model 顶层单字段（向后兼容）
+
+    Args:
+        provider_cfg: provider 的 yaml 配置 dict
+        requested_model: 用户指定的 model id，None 时取 default
+
+    Returns:
+        (model_id, model_config_dict)——model_config 可为空 dict
+    """
+    models = provider_cfg.get("models")
+    if models is not None:
+        # 新格式：多 model
+        if requested_model is not None:
+            if requested_model not in models:
+                raise KeyError(
+                    f"Provider {provider_cfg.get('name', '')} 下无 model: {requested_model}；"
+                    f"可用: {list(models.keys())}"
+                )
+            return requested_model, models[requested_model] or {}
+        # 未指定 model：取 default_model 或第一个
+        default_model = provider_cfg.get("default_model")
+        if default_model and default_model in models:
+            return default_model, models[default_model] or {}
+        # 无 default_model 取第一个
+        first = next(iter(models))
+        return first, models[first] or {}
+
+    # 老格式：顶层 model 字段
+    if "model" in provider_cfg:
+        return provider_cfg["model"], {}
+
+    raise KeyError(f"Provider 配置缺少 model / models 字段")
 
 
 def get_prompt_section(section: str) -> str:

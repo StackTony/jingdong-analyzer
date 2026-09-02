@@ -1,15 +1,52 @@
 # F002 AI Provider 配置（spec §5.3）
 #
-# 参考来源：opencode GLM-5.2 配置（~/.config/opencode/opencode.json）
-# 安全策略：apiKey 不入库，走环境变量 CSI_API_KEY（或 provider 名大写 _API_KEY）
+# 参考来源：opencode GLM-5.2 配置 + 铲屎官 AI SDK 风格（多 provider 多 model）
+# 安全策略：apiKey 不入库，走环境变量 <PROVIDER>_API_KEY
 #
 # 运行时切换：
-#   export CLOWDER_AI_PROVIDER=csi  # 选 provider
-#   export CSI_API_KEY=sk-xxx       # 对应 apiKey
+#   export CLOWDER_AI_PROVIDER=glm          # 选 provider
+#   export GLM_API_KEY=sk-xxx               # 对应 apiKey
+#   # 或在代码里 load_provider("glm", model="glm-5.2")
+#
+# 两种格式均支持：
+#   新格式（多 model）：providers.<name>.models.<model_id> map
+#   老格式（单 model）：providers.<name>.model 顶层字段
 
 default_provider: csi
 
 providers:
+  # ===== 铲屎官主力 provider：GLM-5.2（新格式，多 model）=====
+  glm:
+    name: Zhipu GLM
+    base_url: http://76.53.227.83:4000/v1/
+    api_key_env: GLM_API_KEY
+    protocol: openai
+    timeout_seconds: 120
+    default_model: glm-5.2
+    models:
+      glm-5.2:
+        name: GLM-5.2
+        # 推理模型：max_tokens 要留出 reasoning_tokens 空间（≥2000）
+        max_tokens: 4000
+        temperature: 0.3
+
+  # ===== 铲屎官备用 provider：华为 Euler-Y（新格式，多 model）=====
+  euler-y:
+    name: Huawei Euler-Y
+    base_url: https://aigateway.csitool.rnd.huawei.com/v1/
+    api_key_env: EULER_Y_API_KEY
+    protocol: openai
+    timeout_seconds: 120
+    models:
+      Qwen3.5-122B-A10B:
+        name: Qwen3.5-122B-A10B
+        max_tokens: 4000
+      Deepseek-V4-Flash:
+        name: Deepseek-V4-Flash
+      MiniMax-M2.7:
+        name: MiniMax-2.7
+
+  # ===== 老格式示例（向后兼容，顶层单 model）=====
   csi:
     name: csi.ai
     base_url: http://113.46.219.251:8080/v1/

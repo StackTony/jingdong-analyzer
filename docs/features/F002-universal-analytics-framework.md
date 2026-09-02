@@ -31,6 +31,7 @@ reviewers:
 | 2026-08-31 | 外部 AI review P1-P4 修复：模板列名变量化（P1+P3）+ FakePlanGenerator 趋势用 datetime 列（P2）+ scan-promote 幂等报告（P4）。P5 记入 BACKLOG 候选（feat/f002-review-fixes，TDD 红绿，218 passed 无回归） |
 | 2026-09-01 | 外部 AI review P1-1 B方案 + P1-2 修复：`ChartSpec.data` 改 DataFrame 引用 + `to_json(max_rows=1000)` 惰性序列化（避免 33 万行 to_dict 占 +399MB 内存）；`modeler.trend` 内置 `pd.to_datetime` 预处理（feat/f002-chart-spec-arch，TDD 红绿，223 passed 无回归）。架构改动 @文若 spec review 待签字 |
 | 2026-09-02 | 大数据量优化 G1+G2+G3：3 adapter 支持 `max_rows` 采样加载（CSV nrows / Excel nrows+openpyxl 流式数行 / SQLite LIMIT N）；`render(max_rows=N)` 采样喂 plotly；web app `_render_chart` 内置 `WEB_RENDER_MAX_ROWS=50` 闭环 B 方案 `to_json`（feat/f002-big-data-opt，TDD 红绿，231 passed 无回归）。适配铲屎官数据量级 11 品类 × 万 url |
+| 2026-09-02 | 通用 LLM 多 provider 多 model 对接 G13：`ai_providers.yaml` 新格式 `providers.<name>.models.<model_id>` map + `default_model` 字段；`load_provider(name, model)` 运行时选 provider 下任意 model；向后兼容老格式顶层 `model`；新增 glm / euler-y 配置示例（feat/f002-llm-multi-provider，TDD 红绿，237 passed 无回归） |
 
 ## Why
 
