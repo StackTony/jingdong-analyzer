@@ -26,6 +26,9 @@ created: 2026-08-25
 - [x] **外部 AI P4**: scan-promote 重复报告 → `scan_and_promote` 对比前后 templates 集合差，只返回新增（feat/f002-review-fixes，TDD 红绿）
 - [x] **外部 AI P1-1 (B方案)**: ChartSpec.data 改 DataFrame 引用 + `to_json(max_rows=1000)` 惰性序列化，避免 33 万行 to_dict 占 +399MB 内存（feat/f002-chart-spec-arch，TDD 红绿，223 passed 无回归）
 - [x] **外部 AI P1-2**: modeler.trend 内置 `pd.to_datetime` 预处理，字符串日期列自动转，无法解析抛 ValueError（feat/f002-chart-spec-arch）
+- [x] **G1 大数据采样加载**: 3 个 adapter（CSV/Excel/SQLite）支持 `max_rows` 采样，CSV 用 `nrows`、Excel 用 `nrows` + openpyxl 流式数行、SQLite 用 `LIMIT N` 包 query；metadata 标 `sampled=True + full_row_count`（feat/f002-big-data-opt，TDD 红绿，231 passed 无回归）
+- [x] **G2 render 大数据采样**: `render(chart_spec, mode, max_rows=N)` 新增 max_rows 参数，bar/line/scatter 用 `df.head(N)` 采样喂 plotly，heatmap 不采样（矩阵）；避免 33 万行 bar chart 全量序列化 JSON 卡浏览器（feat/f002-big-data-opt）
+- [x] **G3 web app render 闭环**: 抽 `_render_chart(chart_spec)` 辅助函数，内置 `WEB_RENDER_MAX_ROWS=50` 默认采样，B 方案 `to_json` 闭环——web 端不再全量喂 plotly（feat/f002-big-data-opt）
 - [ ] **外部 AI P5**: B 轨匹配依赖 intent 分类（未分类 intent=None 时跳过 B 轨）。符合当前规则分类器设计，**不改，记入候选**——P7+ 可考虑未分类问题的模糊匹配（embedding 相似度）
 - [ ] **AC-1 Postgres**: 补 `PostgresAdapter`（接生产 DB 时实现，MVP 未需要）
 - [ ] **OQ-1 op_spec 漂移**: 12 op 手写维护 + 抽样测试够；P7+ 上 pydantic/introspect 自动同步 op 函数签名

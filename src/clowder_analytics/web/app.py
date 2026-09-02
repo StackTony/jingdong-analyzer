@@ -157,12 +157,7 @@ def main():
         st.subheader("📈 图表")
         for i, chart_spec in enumerate(result.charts):
             with st.expander(f"图 {i+1}: {chart_spec.type} - {chart_spec.title}", expanded=True):
-                try:
-                    from clowder_analytics.atomic.visualizer import render
-                    fig = render(chart_spec, mode="interactive")
-                    st.plotly_chart(fig, use_container_width=True)
-                except NotImplementedError as e:
-                    st.warning(f"plotly 未装，跳过渲染：{e}")
+                _render_chart(chart_spec)
 
     if result.review:
         st.subheader("📝 AI Reviewer 报告")
@@ -194,6 +189,30 @@ def _save_feedback(library: FlowLibrary, result, adopted: bool):
         user_adopted=adopted,
     )
     library.save_run(rec)
+
+
+# ===== G3: 大数据采样渲染辅助 =====
+
+# web 端默认 max_rows：避免 33 万行 bar chart 全量序列化 JSON 卡浏览器
+# heatmap 是矩阵不采样，bar/line/scatter 采样到前 50 行（交互够用）
+WEB_RENDER_MAX_ROWS = 50
+
+
+def _render_chart(chart_spec) -> None:
+    """web app 渲染 chart 的辅助函数（G3 闭环 B 方案）
+
+    内置 max_rows=50 采样，避免大数据量全量喂 plotly 卡浏览器。
+    plotly 未装时 fallback 到 st.warning。
+    """
+    try:
+        from clowder_analytics.atomic.visualizer import render
+        # G2+G3: 调 render 传 max_rows，B 方案 to_json 闭环
+        # heatmap 是矩阵不采样，其他类型采样到 WEB_RENDER_MAX_ROWS
+        max_rows = None if chart_spec.type == "heatmap" else WEB_RENDER_MAX_ROWS
+        fig = render(chart_spec, mode="interactive", max_rows=max_rows)
+        st.plotly_chart(fig, use_container_width=True)
+    except NotImplementedError as e:
+        st.warning(f"plotly 未装，跳过渲染：{e}")
 
 
 if __name__ == "__main__":

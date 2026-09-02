@@ -70,3 +70,37 @@ def test_render_unknown_type_raises():
     spec = ChartSpec(type="pie", data=pd.DataFrame(), x="", y="")
     with pytest.raises(ValueError):
         render(spec, mode="static")
+
+
+# ===== G2: render(max_rows=...) 大数据采样 =====
+
+def test_render_bar_with_max_rows_samples_data():
+    """max_rows=N 时 render 只用前 N 行喂 plotly，避免浏览器卡死"""
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    # 模拟 1000 行大数据
+    df = pd.DataFrame({"brand": [f"b{i}" for i in range(1000)], "sales": list(range(1000))})
+    spec = ChartSpec(type="bar", data=df, x="brand", y="sales")
+    # max_rows=50 → plotly 只收到 50 行
+    fig = render(spec, mode="static", max_rows=50)
+    assert len(fig.data[0].x) == 50
+    assert len(fig.data[0].y) == 50
+
+
+def test_render_line_with_max_rows_samples_data():
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    df = pd.DataFrame({"month": [f"2026-{i:02d}" for i in range(1, 13)] * 100, "sales": list(range(1200))})
+    spec = ChartSpec(type="line", data=df, x="month", y="sales")
+    fig = render(spec, mode="static", max_rows=100)
+    assert len(fig.data[0].x) == 100
+
+
+def test_render_no_max_rows_passes_full_data():
+    """不传 max_rows 时全量传（向后兼容）"""
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    df = pd.DataFrame({"brand": ["a", "b", "c"], "sales": [1, 2, 3]})
+    spec = ChartSpec(type="bar", data=df, x="brand", y="sales")
+    fig = render(spec, mode="static")
+    assert len(fig.data[0].x) == 3
