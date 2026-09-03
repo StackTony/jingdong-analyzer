@@ -74,6 +74,29 @@ class FlowLibrary:
             for p in sorted(self.templates_dir.glob("*.yaml"))
         ]
 
+    def delete_template(self, template_id: str) -> bool:
+        """删除模板（G16：界面管理；破坏性操作，web 层负责二次确认）
+
+        Raises:
+            KeyError: 模板不存在（明确报错优于静默）
+        """
+        path = self.templates_dir / f"{template_id}.yaml"
+        if not path.exists():
+            raise KeyError(f"模板不存在: {template_id}")
+        path.unlink()
+        return True
+
+    def update_template(self, tpl: Template) -> Path:
+        """更新模板（G16：界面管理）
+
+        仅允许更新已存在的 template_id（不存在报错，防止 update 静默变 create）。
+        元字段（promoted_from_plan_id / stability 等）随 tpl 整体写入，调用方
+        从 load_template 读出再改，天然保持一致。
+        """
+        if not (self.templates_dir / f"{tpl.template_id}.yaml").exists():
+            raise KeyError(f"模板不存在: {tpl.template_id}（update 不新建，请用 save_template）")
+        return self.save_template(tpl)
+
     # ===== Plan CRUD =====
 
     def save_plan(self, plan: Plan) -> Path:
@@ -106,6 +129,24 @@ class FlowLibrary:
                 data = json.load(f)
             out.append(Plan.from_dict(data))
         return out
+
+    def delete_plan(self, plan_id: str) -> bool:
+        """删除 Plan（G16：界面管理；破坏性操作，web 层负责二次确认）
+
+        Raises:
+            KeyError: Plan 不存在
+        """
+        path = self.plans_dir / f"{plan_id}.json"
+        if not path.exists():
+            raise KeyError(f"Plan 不存在: {plan_id}")
+        path.unlink()
+        return True
+
+    def update_plan(self, plan: Plan) -> Path:
+        """更新 Plan（G16：界面管理；仅更新已存在的 plan_id）"""
+        if not (self.plans_dir / f"{plan.plan_id}.json").exists():
+            raise KeyError(f"Plan 不存在: {plan.plan_id}（update 不新建，请用 save_plan）")
+        return self.save_plan(plan)
 
     # ===== RunRecord CRUD =====
 

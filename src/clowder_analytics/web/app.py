@@ -1,9 +1,10 @@
-"""F002 P5: Streamlit 面板（spec §8.2 / AC-9）
+"""F002 P5: Streamlit 面板（spec §8.2 / AC-9）+ G16 Flow Library 管理
 
 单页应用：
 - 左侧：上传 Excel/CSV → 显示 schema + 指纹
 - 中间：选分析意图（下拉 + 自然语言输入）→ 显示命中的 A/B/兜底路径
 - 右侧：交互图 + AI 报告 + 采纳/拒绝按钮（反馈写回运行日志）
+- G16 tab：Flow Library 管理（查看/更新/删除 Plan 模板，删除二次确认）
 
 启动：streamlit run src/clowder_analytics/web/app.py
 """
@@ -14,12 +15,15 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import yaml
 
 from clowder_analytics.adapters.base import Dataset, compute_fingerprint
 from clowder_analytics.adapters.csv import CsvAdapter
 from clowder_analytics.adapters.excel import ExcelAdapter
 from clowder_analytics.ai.fake import FakePlanGenerator, FakeReviewer
+from clowder_analytics.flow_library.models import Template
 from clowder_analytics.flow_library.store import FlowLibrary
+from clowder_analytics.orchestrator.plan import Step
 from clowder_analytics.orchestrator.run import run
 
 
@@ -133,6 +137,9 @@ def main():
     st.title("🐾 Clowder AI 通用数据分析框架")
     st.caption("F002 双轨自进化：A 模板 / B Plan / LLM 兜底")
 
+    # ===== G16: 顶层 tab——分析 / Flow Library 管理 =====
+    tab_analyze, tab_manage = st.tabs(["🔍 分析", "📚 Flow Library 管理"])
+
     # ===== 左侧：模型选择（G14：展示当前模型 + 切换）=====
     llm_choice = _render_model_selector()
 
@@ -161,7 +168,17 @@ def main():
         if lib_dir:
             st.session_state.library = FlowLibrary(base_dir=lib_dir)
 
-    # ===== 中间：分析意图 =====
+    # ===== G16: 管理页先渲染（分析页有 early return，顺序靠 st.tabs 调用序保证显示）=====
+    with tab_manage:
+        _render_flow_library_manager(st.session_state.library)
+
+    # ===== 中间：分析意图（tab_analyze 内）=====
+    with tab_analyze:
+        _render_analysis_tab(llm_choice, enable_review)
+
+
+def _render_analysis_tab(llm_choice, enable_review: bool):
+    """分析主流程（G16 抽出，供 tab_analyze 容器调用）"""
     if "dataset" not in st.session_state:
         st.info("👈 请先在左侧上传数据文件")
         return
@@ -278,6 +295,190 @@ def _save_feedback(library: FlowLibrary, result, adopted: bool):
         user_adopted=adopted,
     )
     library.save_run(rec)
+
+
+# ===== G16: Flow Library 管理（查看/更新/删除）=====
+
+def _parse_steps_yaml(text: str) -> list[Step]:
+    """把编辑框里的 YAML steps 文本解析为 Step 列表
+
+    Raises:
+        ValueError: YAML 非法 / 顶层不是列表 / 列表项缺 op
+    """
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"steps YAML 解析失败: {e}") from e
+    if not isinstance(data, list):
+        raise ValueError("steps 必须是 YAML 列表（- op: ... 开头）")
+    steps = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict) or "op" not in item:
+            raise ValueError(f"第 {i + 1} 项缺少 op 字段")
+        steps.append(Step(op=item["op"], args=item.get("args") or {}))
+    return steps
+
+
+def _apply_template_edit(
+    library: FlowLibrary,
+    template_id: str,
+    steps: list[Step],
+    intent: str,
+    reviewer_enabled: bool,
+) -> Template:
+    """应用模板编辑：只改业务字段，元字段从库中原模板读取保持一致
+
+    G16 验收点：更新保 promoted_from_plan_id / stability 元字段一致——
+    调用方（编辑表单）不接触元字段，本函数从存储读原值回填，杜绝覆盖丢失。
+
+    Raises:
+        KeyError: 模板不存在
+    """
+    original = library.load_template(template_id)
+    if original is None:
+        raise KeyError(f"模板不存在: {template_id}")
+    updated = Template(
+        template_id=template_id,
+        intent=intent,
+        schema_fingerprint=original.schema_fingerprint,
+        steps=steps,
+        reviewer_enabled=reviewer_enabled,
+        fallback_strategy=original.fallback_strategy,
+        created_at=original.created_at,
+        promoted_from_plan_id=original.promoted_from_plan_id,
+        stability=original.stability,
+        confidence=original.confidence,
+    )
+    library.update_template(updated)
+    return updated
+
+
+def _render_flow_library_manager(library: FlowLibrary) -> None:
+    """G16 Flow Library 管理页：查看/更新/删除模板与 Plan
+
+    删除是破坏性操作 → 二次确认（session_state 记住待删 id，确认按钮才执行）。
+    """
+    st.subheader("📚 Flow Library 管理")
+
+    tab_tpl, tab_plan = st.tabs(["A 轨模板", "B 轨 Plan"])
+
+    # ---- A 轨模板 ----
+    with tab_tpl:
+        templates = library.list_templates()
+        if not templates:
+            st.info("暂无模板（运行分析后由晋升机制生成，或 cold_start 内置）")
+        else:
+            options = {f"{t.template_id}（{t.intent} / {t.stability}）": t.template_id for t in templates}
+            selected_label = st.selectbox("选择模板", list(options.keys()), key="g16_tpl_select")
+            tpl_id = options[selected_label]
+            tpl = library.load_template(tpl_id)
+            if tpl is None:
+                st.error(f"模板加载失败: {tpl_id}")
+                return
+
+            col_info, col_meta = st.columns(2)
+            with col_info:
+                st.write(f"**意图**: {tpl.intent}")
+                st.write(f"**Schema 指纹**: `{tpl.schema_fingerprint}`")
+                st.write(f"**Reviewer**: {'开' if tpl.reviewer_enabled else '关'}")
+            with col_meta:
+                st.write(f"**stability**: `{tpl.stability}`")
+                st.write(f"**promoted_from**: `{tpl.promoted_from_plan_id or '—'}`")
+                st.write(f"**confidence**: {tpl.confidence}")
+
+            st.write("**Steps**（YAML 编辑，保存后生效）:")
+            steps_text = st.text_area(
+                "steps",
+                value=yaml.safe_dump(
+                    [{"op": s.op, "args": s.args} for s in tpl.steps],
+                    allow_unicode=True, sort_keys=False,
+                ),
+                height=200,
+                key=f"g16_tpl_steps_{tpl_id}",
+                label_visibility="collapsed",
+            )
+            edit_intent = st.text_input("意图", value=tpl.intent, key=f"g16_tpl_intent_{tpl_id}")
+            edit_reviewer = st.checkbox("启用 Reviewer", value=tpl.reviewer_enabled, key=f"g16_tpl_rev_{tpl_id}")
+
+            if st.button("💾 保存修改", key=f"g16_tpl_save_{tpl_id}", type="primary"):
+                try:
+                    steps = _parse_steps_yaml(steps_text)
+                    _apply_template_edit(
+                        library, template_id=tpl_id,
+                        steps=steps, intent=edit_intent, reviewer_enabled=edit_reviewer,
+                    )
+                    st.success(f"模板 {tpl_id} 已更新（元字段保持不变）")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(f"保存失败: {e}")
+                except KeyError as e:
+                    st.error(f"保存失败: {e}")
+
+            # 删除：二次确认状态机
+            confirm_key = f"g16_tpl_del_confirm_{tpl_id}"
+            if confirm_key not in st.session_state:
+                st.session_state[confirm_key] = False
+            if not st.session_state[confirm_key]:
+                if st.button("🗑️ 删除模板", key=f"g16_tpl_del_{tpl_id}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(f"确认删除模板 **{tpl_id}**？此操作不可恢复！")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ 确认删除", key=f"g16_tpl_del_yes_{tpl_id}", type="primary"):
+                        library.delete_template(tpl_id)
+                        st.session_state[confirm_key] = False
+                        st.success(f"模板 {tpl_id} 已删除")
+                        st.rerun()
+                with col_no:
+                    if st.button("❌ 取消", key=f"g16_tpl_del_no_{tpl_id}"):
+                        st.session_state[confirm_key] = False
+                        st.rerun()
+
+    # ---- B 轨 Plan ----
+    with tab_plan:
+        plans = library.list_plans()
+        if not plans:
+            st.info("暂无 Plan（兜底 LLM 生成后自动入库）")
+        else:
+            plan_options = {f"{p.plan_id}（{p.intent}）": p.plan_id for p in plans}
+            plan_label = st.selectbox("选择 Plan", list(plan_options.keys()), key="g16_plan_select")
+            plan_id = plan_options[plan_label]
+            plan = library.load_plan(plan_id)
+            if plan is None:
+                st.error(f"Plan 加载失败: {plan_id}")
+                return
+
+            st.write(f"**意图**: {plan.intent}")
+            st.write(f"**Schema 指纹**: `{plan.schema_fingerprint}`")
+            st.write(f"**Fallback**: {plan.fallback_strategy}")
+            st.json(
+                [{"op": s.op, "args": s.args} for s in plan.steps],
+                expanded=True,
+            )
+
+            # Plan 删除：二次确认状态机
+            plan_confirm_key = f"g16_plan_del_confirm_{plan_id}"
+            if plan_confirm_key not in st.session_state:
+                st.session_state[plan_confirm_key] = False
+            if not st.session_state[plan_confirm_key]:
+                if st.button("🗑️ 删除 Plan", key=f"g16_plan_del_{plan_id}"):
+                    st.session_state[plan_confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(f"确认删除 Plan **{plan_id}**？此操作不可恢复！")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ 确认删除", key=f"g16_plan_del_yes_{plan_id}", type="primary"):
+                        library.delete_plan(plan_id)
+                        st.session_state[plan_confirm_key] = False
+                        st.success(f"Plan {plan_id} 已删除")
+                        st.rerun()
+                with col_no:
+                    if st.button("❌ 取消", key=f"g16_plan_del_no_{plan_id}"):
+                        st.session_state[plan_confirm_key] = False
+                        st.rerun()
 
 
 # ===== G3: 大数据采样渲染辅助 =====
