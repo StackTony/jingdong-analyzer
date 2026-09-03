@@ -126,7 +126,7 @@ def load_provider(name: str | None = None, model: str | None = None) -> LLMProvi
     """按配置加载 provider
 
     Args:
-        name: provider 名（None 取 default_provider）
+        name: provider 名（None 取 default_provider，default 不存在时取第一个）
         model: provider 下的 model id（None 取 default_model 或第一个 model）
 
     Returns:
@@ -134,27 +134,31 @@ def load_provider(name: str | None = None, model: str | None = None) -> LLMProvi
 
     Raises:
         KeyError: provider 名不存在 / model 不存在
-        RuntimeError: apiKey 环境变量未设
+        RuntimeError: apiKey 未配置（既无 api_key 直填也无 api_key_env 环境变量）
         NotImplementedError: openai SDK 未装 / 未知 protocol
 
     支持两种 yaml 格式：
     - 新格式（多 model）：providers.<name>.models.<model_id> map 结构
     - 老格式（单 model）：providers.<name>.model 顶层字段（向后兼容）
+
+    apiKey 两种配置方式：
+    - api_key: sk-xxx（直填，AI SDK 风格，优先）
+    - api_key_env: ENV_NAME（走环境变量，不入库，安全默认）
     """
     cfg = _load_yaml_config()
     if name is None:
-        name = cfg.get("default_provider", "csi")
+        name = get_default_provider_name()
     providers = cfg.get("providers", {})
     if name not in providers:
         raise KeyError(f"未知 provider: {name}；可用: {list(providers.keys())}")
 
     p = providers[name]
-    api_key_env = p.get("api_key_env", f"{name.upper()}_API_KEY")
-    api_key = os.environ.get(api_key_env, "")
+    api_key = _resolve_api_key(p, name)
     if not api_key:
+        api_key_env = p.get("api_key_env", f"{name.upper()}_API_KEY")
         raise RuntimeError(
-            f"Provider {name} 的 apiKey 环境变量 {api_key_env} 未设。"
-            f"请 export {api_key_env}=sk-xxx 后重试。"
+            f"Provider {name} 的 apiKey 未配置。"
+            f"请在 yaml 写 api_key: sk-xxx，或 export {api_key_env}=sk-xxx 后重试。"
         )
 
     # 解析 model 配置（支持新格式 models map + 老格式顶层 model）
@@ -212,6 +216,68 @@ def _resolve_model(provider_cfg: dict, requested_model: str | None) -> tuple[str
         return provider_cfg["model"], {}
 
     raise KeyError(f"Provider 配置缺少 model / models 字段")
+
+
+def _resolve_api_key(provider_cfg: dict, name: str) -> str:
+    """解析 apiKey：直填 api_key 优先，否则走 api_key_env 环境变量
+
+    铲屎官 AI SDK 风格：api_key 直接写在配置里（如私有 endpoint）。
+    安全默认仍是 api_key_env（key 不入库）。
+    """
+    # 1. 直填 api_key 优先
+    direct = provider_cfg.get("api_key", "")
+    if direct:
+        return direct
+    # 2. 走环境变量
+    api_key_env = provider_cfg.get("api_key_env", f"{name.upper()}_API_KEY")
+    return os.environ.get(api_key_env, "")
+
+
+def get_default_provider_name() -> str:
+    """取 default_provider；指向不存在的 provider 时兜底取第一个
+
+    铲屎官场景：yaml 里 default_provider: csi 但 csi provider 已删
+    → 不应 KeyError，应兜底到第一个可用 provider。
+    """
+    cfg = _load_yaml_config()
+    providers = cfg.get("providers", {})
+    default = cfg.get("default_provider")
+    if default and default in providers:
+        return default
+    if providers:
+        return next(iter(providers))
+    raise KeyError("ai_providers.yaml 未配置任何 provider")
+
+
+def list_providers() -> list[dict]:
+    """枚举所有 provider 和 model（页面展示 / 模型切换用）
+
+    Returns:
+        [{"name": "euler-y", "display_name": "csi",
+          "models": ["GLM-5.3-Flash", "GLM-5.3", ...],
+          "default_model": "GLM-5.3-Flash | None"}, ...]
+
+    老格式顶层 model 字段也归一到 models 列表里。
+    """
+    cfg = _load_yaml_config()
+    providers = cfg.get("providers", {})
+    result = []
+    for name, p in providers.items():
+        models_map = p.get("models")
+        if models_map is not None:
+            models = list(models_map.keys())
+            default_model = p.get("default_model")
+        else:
+            # 老格式：顶层 model
+            models = [p["model"]] if "model" in p else []
+            default_model = models[0] if models else None
+        result.append({
+            "name": name,
+            "display_name": p.get("name", name),
+            "models": models,
+            "default_model": default_model,
+        })
+    return result
 
 
 def get_prompt_section(section: str) -> str:

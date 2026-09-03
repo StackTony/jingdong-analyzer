@@ -3,6 +3,7 @@
 命令：
     jd-analyze inspect <path>                    # 数据源探索
     jd-analyze run --source <path> --question <text> [--no-review] [--lib <dir>]
+    jd-analyze run --llm --llm-model GLM-5.3-Flash ...   # 真实 LLM + 切换模型
     jd-analyze flow list-templates [--lib <dir>]
     jd-analyze flow list-plans [--lib <dir>]
     jd-analyze flow stats [--lib <dir>]
@@ -83,11 +84,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             from clowder_analytics.ai.llm_plan_generator import LLMPlanGenerator
             from clowder_analytics.ai.llm_reviewer import LLMReviewer
             from clowder_analytics.ai.llm_provider import load_provider
-            provider = load_provider(args.llm_provider)
+            # G14：--llm-model 切换 provider 下的 model（/model 等价 CLI 入口）
+            provider = load_provider(args.llm_provider, model=args.llm_model)
+            print(f"🤖 使用模型: {args.llm_provider or 'default'} / {provider.config.model}")
             generator = LLMPlanGenerator(provider=provider)
             reviewer = LLMReviewer(provider=provider)
-        except RuntimeError as e:
-            # apiKey 环境变量未设 → 兜底 Fake + 警告
+        except (RuntimeError, KeyError, NotImplementedError) as e:
+            # apiKey 未配置 / provider / model 不存在 → 兜底 Fake + 警告
             print(f"⚠️ LLM provider 加载失败：{e}", file=sys.stderr)
             print("⚠️ 退回 Fake generator/reviewer", file=sys.stderr)
             generator = FakePlanGenerator()
@@ -208,11 +211,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--lib", default=None, help="Flow Library 目录")
     p_run.add_argument(
         "--llm", action="store_true",
-        help="用真实 LLM provider（需 CSI_API_KEY 环境变量）",
+        help="用真实 LLM provider（需设 EULER_Y_API_KEY 环境变量，见 ai_providers.yaml）",
     )
     p_run.add_argument(
-        "--llm-provider", default="csi",
-        help="LLM provider 名（默认 csi，见 ai_providers.yaml）",
+        "--llm-provider", default=None,
+        help="LLM provider 名（默认取 ai_providers.yaml 的 default_provider）",
+    )
+    p_run.add_argument(
+        "--llm-model", default=None,
+        help="切换 provider 下的 model（如 GLM-5.3-Flash / Qwen3.8-Flash，"
+             "默认取 provider 的 default_model）",
     )
     p_run.set_defaults(func=cmd_run)
 

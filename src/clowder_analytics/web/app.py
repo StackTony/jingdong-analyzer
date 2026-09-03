@@ -34,6 +34,74 @@ def _init_state():
         st.session_state.last_question = ""
 
 
+def _render_model_selector() -> tuple[str, str, bool] | None:
+    """sidebar 模型选择器（G14）：展示当前模型 + 切换 provider/model
+
+    Returns:
+        (provider_name, model_id, use_real_llm)；配置不可用时返回 None
+    """
+    try:
+        from clowder_analytics.ai.llm_provider import (
+            get_default_provider_name,
+            list_providers,
+        )
+        providers = list_providers()
+        if not providers:
+            st.sidebar.caption("（ai_providers.yaml 未配置 provider）")
+            return None
+    except Exception as e:
+        st.sidebar.caption(f"（LLM 配置加载失败：{e}）")
+        return None
+
+    default_name = get_default_provider_name()
+    provider_names = [p["name"] for p in providers]
+    default_idx = provider_names.index(default_name) if default_name in provider_names else 0
+
+    with st.sidebar:
+        st.divider()
+        st.header("🤖 AI 模型")
+        selected_provider = st.selectbox(
+            "Provider", provider_names, index=default_idx,
+        )
+        provider_info = next(p for p in providers if p["name"] == selected_provider)
+        models = provider_info["models"]
+        if not models:
+            st.caption("（该 provider 无 model 配置）")
+            return None
+        default_model = provider_info.get("default_model") or models[0]
+        model_idx = models.index(default_model) if default_model in models else 0
+        selected_model = st.selectbox("Model", models, index=model_idx)
+        use_real_llm = st.checkbox("使用真实 LLM", value=True)
+        # 当前模型展示（铲屎官要求：页面展示 AI 当前使用模型）
+        if use_real_llm:
+            st.caption(f"当前模型：**{selected_provider}** / **{selected_model}**")
+        else:
+            st.caption("当前模型：**Fake**（离线模式，不调 LLM）")
+        return selected_provider, selected_model, use_real_llm
+
+
+def _build_ai_stack(llm_choice: tuple[str, str, bool] | None):
+    """按模型选择构造 (generator, reviewer)
+
+    真实 LLM：load_provider(provider, model) → LLMPlanGenerator / LLMReviewer
+    Fake / 未配置：FakePlanGenerator / FakeReviewer
+    """
+    if llm_choice is None:
+        return FakePlanGenerator(), FakeReviewer()
+    provider_name, model_id, use_real = llm_choice
+    if not use_real:
+        return FakePlanGenerator(), FakeReviewer()
+    try:
+        from clowder_analytics.ai.llm_plan_generator import LLMPlanGenerator
+        from clowder_analytics.ai.llm_reviewer import LLMReviewer
+        from clowder_analytics.ai.llm_provider import load_provider
+        provider = load_provider(provider_name, model=model_id)
+        return LLMPlanGenerator(provider=provider), LLMReviewer(provider=provider)
+    except (RuntimeError, KeyError, NotImplementedError) as e:
+        st.sidebar.warning(f"LLM 加载失败，退回 Fake：{e}")
+        return FakePlanGenerator(), FakeReviewer()
+
+
 def _load_uploaded_file(uploaded) -> Dataset | None:
     if uploaded is None:
         return None
@@ -64,6 +132,9 @@ def main():
 
     st.title("🐾 Clowder AI 通用数据分析框架")
     st.caption("F002 双轨自进化：A 模板 / B Plan / LLM 兜底")
+
+    # ===== 左侧：模型选择（G14：展示当前模型 + 切换）=====
+    llm_choice = _render_model_selector()
 
     # ===== 左侧：数据源 =====
     with st.sidebar:
@@ -119,12 +190,14 @@ def main():
 
     if st.button("🚀 运行分析", type="primary", disabled=not question):
         with st.spinner("运行中..."):
+            # G14：按 sidebar 模型选择构造 generator/reviewer（真实 LLM / Fake）
+            generator, reviewer = _build_ai_stack(llm_choice)
             result = run(
                 question=question,
                 dataset=ds,
                 library=st.session_state.library,
-                generator=FakePlanGenerator(),
-                reviewer=FakeReviewer(),
+                generator=generator,
+                reviewer=reviewer,
                 enable_review=enable_review,
             )
             st.session_state.last_result = result
@@ -137,13 +210,19 @@ def main():
         return
 
     st.header("📊 运行结果")
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d = st.columns(4)
     with col_a:
         st.metric("路由", result.route)
     with col_b:
         st.metric("LLM 调用", result.llm_calls)
     with col_c:
         st.metric("执行步骤", f"{sum(1 for s in result.log if s.get('ok'))}/{len(result.log)}")
+    with col_d:
+        # G14：结果区展示当前使用模型
+        if llm_choice is not None and llm_choice[2]:
+            st.metric("当前模型", llm_choice[1])
+        else:
+            st.metric("当前模型", "Fake")
 
     if result.matched_template_id:
         st.write(f"**命中模板**: {result.matched_template_id}")
