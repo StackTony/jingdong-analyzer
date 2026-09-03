@@ -43,6 +43,9 @@ ENV/
 .env.local
 .env.*.local
 
+# Local conf overrides（G15：本地直填 key 等覆盖项，永不入库）
+*.local.yaml
+
 # IDE
 .idea/
 .vscode/

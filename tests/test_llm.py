@@ -762,3 +762,99 @@ providers:
     # load_provider() 不传 name 也不炸
     p = load_provider()
     assert p.config.name == "alpha"
+
+
+# ===== G15: ai_providers.local.yaml 两层配置 + api_key_env 值校验 =====
+
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.fixture
+def two_layer_yaml(tmp_path, monkeypatch):
+    """主配置（key 走 env）+ local 配置（直填 key）两层 fixture"""
+    main_yaml = tmp_path / "ai_providers.yaml"
+    main_yaml.write_text(
+        "default_provider: euler-y\n"
+        "providers:\n"
+        "  euler-y:\n"
+        "    name: csi\n"
+        "    base_url: http://localhost:9999/v1/\n"
+        "    api_key_env: EULER_Y_API_KEY\n"
+        "    protocol: openai\n"
+        "    default_model: GLM-5.3-Flash\n"
+        "    models:\n"
+        "      GLM-5.3-Flash:\n"
+        "        name: GLM-5.3-Flash\n",
+        encoding="utf-8",
+    )
+    import clowder_analytics.ai.llm_provider as mod
+    monkeypatch.setattr(mod, "_CONFIG_PATH", main_yaml)
+    monkeypatch.setattr(mod, "_LOCAL_CONFIG_PATH", tmp_path / "ai_providers.local.yaml")
+    monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
+    return tmp_path
+
+
+def test_local_yaml_overrides_api_key(two_layer_yaml, monkeypatch):
+    """local yaml 直填 key 深合并覆盖主配置——env 未设也能加载"""
+    local = two_layer_yaml / "ai_providers.local.yaml"
+    local.write_text(
+        "providers:\n"
+        "  euler-y:\n"
+        "    api_key: sk-from-local-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EULER_Y_API_KEY", raising=False)
+    p = load_provider("euler-y")
+    assert p.config.api_key == "sk-from-local-file"
+    # local 只覆盖 key，主配置其余字段（base_url/models）保留
+    assert p.config.base_url == "http://localhost:9999/v1/"
+    assert p.config.model == "GLM-5.3-Flash"
+
+
+def test_local_yaml_merge_nested_models(two_layer_yaml, monkeypatch):
+    """local 可深合并嵌套字段（如给某 model 加 max_tokens）而不清掉兄弟字段"""
+    local = two_layer_yaml / "ai_providers.local.yaml"
+    local.write_text(
+        "providers:\n"
+        "  euler-y:\n"
+        "    models:\n"
+        "      GLM-5.3-Flash:\n"
+        "        max_tokens: 8000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EULER_Y_API_KEY", "sk-from-env")
+    p = load_provider("euler-y")
+    # local 合并后的 max_tokens 生效
+    assert p.config.max_tokens == 8000
+    # 主配置的其他 model 字段仍在（models map 不被整体替换）
+    from clowder_analytics.ai.llm_provider import list_providers
+    models = list_providers()[0]["models"]
+    assert models == ["GLM-5.3-Flash"]
+
+
+def test_no_local_yaml_uses_main_only(two_layer_yaml, monkeypatch):
+    """没有 local 文件时纯用主配置（env 生效路径不变）"""
+    monkeypatch.setenv("EULER_Y_API_KEY", "sk-from-env")
+    p = load_provider("euler-y")
+    assert p.config.api_key == "sk-from-env"
+
+
+def test_api_key_env_looking_like_key_rejected(two_layer_yaml):
+    """api_key_env 值长得像 key（sk- 开头）→ 明确报错防填错（LL-049 现场复现）"""
+    import clowder_analytics.ai.llm_provider as mod
+    main = two_layer_yaml / "ai_providers.yaml"
+    main.write_text(
+        "providers:\n"
+        "  euler-y:\n"
+        "    name: csi\n"
+        "    base_url: http://localhost:9999/v1/\n"
+        "    api_key_env: sk-fake-invalid-key-sample\n"
+        "    protocol: openai\n"
+        "    models:\n"
+        "      GLM-5.3-Flash:\n"
+        "        name: GLM-5.3-Flash\n",
+        encoding="utf-8",
+    )
+    # match 用英文/变量名片段（避免 Windows GBK 控制台下中文 match 不稳）
+    with _pytest.raises(RuntimeError, match=r"api_key_env.*EULER_Y_API_KEY.*ai_providers\.local\.yaml"):
+        load_provider("euler-y")

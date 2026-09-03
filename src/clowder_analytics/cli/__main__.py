@@ -26,6 +26,7 @@ from clowder_analytics.adapters.excel import ExcelAdapter
 from clowder_analytics.ai.fake import FakePlanGenerator, FakeReviewer
 from clowder_analytics.flow_library.promoter import Promoter
 from clowder_analytics.flow_library.store import FlowLibrary
+from clowder_analytics.orchestrator.progress_display import CliProgressCallback
 from clowder_analytics.orchestrator.run import run
 
 # Windows 控制台默认 GBK，强制 UTF-8 输出避免中文乱码
@@ -106,6 +107,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         generator=generator,
         reviewer=reviewer,
         enable_review=enable_review,
+        progress=CliProgressCallback().callback,
     )
 
     print(f"=== 运行结果 ===")

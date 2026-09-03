@@ -110,15 +110,37 @@ class OpenAICompatibleProvider(LLMProvider):
 # ===== 配置加载 =====
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config" / "ai_providers.yaml"
+_LOCAL_CONFIG_PATH = _CONFIG_PATH.parent / "ai_providers.local.yaml"
 _CONFIG_CACHE: dict[str, Any] | None = None
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """递归深合并：override 覆盖 base，嵌套 dict 合并不整体替换"""
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
 def _load_yaml_config() -> dict[str, Any]:
-    """加载 ai_providers.yaml（缓存）"""
+    """加载 ai_providers.yaml（缓存）+ ai_providers.local.yaml 深合并覆盖
+
+    两层配置（G15）：
+    - 主配置 ai_providers.yaml：git 跟踪，key 走 api_key_env（安全模板）
+    - local 配置 ai_providers.local.yaml：gitignored，直填 api_key 等本地
+      覆盖项，深合并进主配置（铲屎官偏好：conf 里直接配 key，仓库只留模板）
+    """
     global _CONFIG_CACHE
     if _CONFIG_CACHE is None:
         with open(_CONFIG_PATH, encoding="utf-8") as f:
-            _CONFIG_CACHE = yaml.safe_load(f)
+            _CONFIG_CACHE = yaml.safe_load(f) or {}
+        if _LOCAL_CONFIG_PATH.exists():
+            with open(_LOCAL_CONFIG_PATH, encoding="utf-8") as f:
+                local_cfg = yaml.safe_load(f) or {}
+            _CONFIG_CACHE = _deep_merge(_CONFIG_CACHE, local_cfg)
     return _CONFIG_CACHE
 
 
@@ -230,6 +252,15 @@ def _resolve_api_key(provider_cfg: dict, name: str) -> str:
         return direct
     # 2. 走环境变量
     api_key_env = provider_cfg.get("api_key_env", f"{name.upper()}_API_KEY")
+    # 值校验（G15，LL-049 现场复现防护）：api_key_env 是环境变量的名字，
+    # 不是 key 本身。填成 sk-xxx 说明把 key 填错了字段，当场指出而不是
+    # 生成 "export sk-xxx=sk-xxx" 这种误导报错。
+    if str(api_key_env).startswith("sk-"):
+        raise RuntimeError(
+            f"Provider {name} 的 api_key_env 值 '{api_key_env[:12]}...' 看起来像 key 本身。"
+            f"api_key_env 填的是环境变量的名字（如 EULER_Y_API_KEY）；"
+            f"要直填 key 请用 api_key 字段（建议写在 ai_providers.local.yaml，不入库）。"
+        )
     return os.environ.get(api_key_env, "")
 
 

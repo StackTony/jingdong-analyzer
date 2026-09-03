@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -32,9 +32,11 @@ from clowder_analytics.ai.fake import FakePlanGenerator, FakeReviewer
 from clowder_analytics.flow_library.models import RunRecord, Template
 from clowder_analytics.flow_library.promoter import Promoter
 from clowder_analytics.flow_library.store import FlowLibrary
-from clowder_analytics.orchestrator.executor import execute
+from clowder_analytics.orchestrator.executor import ProgressCallback, execute
 from clowder_analytics.orchestrator.plan import Plan, RunResult, Step
 from clowder_analytics.orchestrator.router import Route, route
+
+_ = field  # re-exported for dataclass users importing from this module
 
 
 # ===== 模板列名变量解析（外部 AI P1 修复） =====
@@ -201,6 +203,7 @@ def run(
     generator: AIPlanGenerator | None = None,
     reviewer: AIReviewer | None = None,
     enable_review: bool = True,
+    progress: ProgressCallback | None = None,
 ) -> FullRunResult:
     """端到端运行（spec §6.2 / §7.5）
 
@@ -211,6 +214,10 @@ def run(
         generator: fallback 时的 Plan 生成器（None 用 FakePlanGenerator）
         reviewer: AI Reviewer（None 用 FakeReviewer）
         enable_review: 全局开关；plan.reviewer_enabled 也需 True 才调
+        progress: 可选进度回调 progress(stage, current, total, detail)。
+            阶段序列（真实 LLM fallback 路径完整版）：
+              route(0/1) → llm(0/1, detail=模型名) → execute(1..N/N) → review(0/1) → promote(0/1)
+            A/B 轨命中时无 llm 阶段。回调抛异常被吞掉，不影响分析主流程。
 
     Returns:
         FullRunResult
@@ -222,7 +229,18 @@ def run(
     if reviewer is None:
         reviewer = FakeReviewer()
 
+    def _p(stage: str, current: int = 0, total: int = 1,
+           detail: str | None = None) -> None:
+        """安全转发进度回调（渲染异常不反噬分析）"""
+        if progress is None:
+            return
+        try:
+            progress(stage, current, total, detail)
+        except Exception:
+            pass
+
     t0 = time.perf_counter()
+    _p("route")
     r = route(question, dataset, library)
     llm_calls = 0
     matched_template_id: str | None = None
@@ -234,27 +252,33 @@ def run(
         resolved_tpl = resolve_template_variables(r.template, dataset)
         plan = Plan.from_dict(resolved_tpl.to_plan_dict())
         matched_template_id = r.template.template_id
+        _p("template", detail=f"命中模板 {matched_template_id}")
     elif r.kind == "B" and r.plan is not None:
         plan = r.plan
         matched_plan_id = plan.plan_id
+        _p("plan", detail=f"命中 Plan {matched_plan_id}")
     else:
         # fallback：router 已判 A/B 都未命中（router L67/L72 调过 match_template/match_plan）
         # 生成新 Plan 并沉淀，下次同 (fp, intent) 走 B 轨命中
         # （spec §7.1 B 轨：fallback 生成的 Plan save 后下次复用）
         # 关羽 P2-3 修复：删除原 L99-102 的 match_plan 复用分支（死代码——
         # router 已调 match_plan 判未命中，这里再调必然返回 None）
+        _p("llm", detail="调用模型中（通常 5-30 秒，请稍候）")
         plan = generator.generate(question, dataset, intent=r.intent)
         llm_calls = 1
         library.save_plan(plan)
         matched_plan_id = plan.plan_id
+        _p("llm", 1, 1, f"已生成 {plan.plan_id}")
 
     # 执行
-    inner = execute(plan, dataset)
+    inner = execute(plan, dataset, progress=progress)
 
     # Reviewer（plan.reviewer_enabled 且 enable_review 同时为 True）
     review_text: str | None = None
     if enable_review and plan.reviewer_enabled:
+        _p("review", detail="分析中")
         review_text = reviewer.review(dataset, inner.charts, inner.log)
+        _p("review", 1, 1, "完成")
 
     duration_ms = int((time.perf_counter() - t0) * 1000)
 
