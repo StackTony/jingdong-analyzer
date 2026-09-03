@@ -80,3 +80,6 @@ src/clowder_analytics/flow_library_data/plans/*.json
 src/clowder_analytics/flow_library_data/runs/*.jsonl
 src/clowder_analytics/flow_library_data/templates/tpl-*.yaml
 ._tmp_upload/
+
+# Playwright MCP 会话产物（临时调试快照/日志，不入库）
+.playwright-mcp/
