@@ -120,33 +120,62 @@ def test_openai_provider_chat_with_response_format():
 
 # ===== load_provider 配置加载 =====
 
-def test_load_provider_unknown_raises():
+# G14 后生产 yaml 无 csi provider（铲屎官改为 euler-y 直填 key），
+# 这些测试改用隔离的 mock 配置，不绑死生产 yaml 内容
+_ENV_STYLE_YAML = """
+default_provider: testprov
+
+providers:
+  testprov:
+    name: test provider
+    base_url: http://localhost:8080/v1/
+    api_key_env: TESTPROV_API_KEY
+    model: GLM-5.2
+    protocol: openai
+    temperature: 0.3
+    max_tokens: 4000
+    timeout_seconds: 120
+"""
+
+
+@pytest.fixture
+def env_style_yaml(tmp_path, monkeypatch):
+    """写 env 风格配置到临时文件，patch 配置路径"""
+    cfg = tmp_path / "env_style.yaml"
+    cfg.write_text(_ENV_STYLE_YAML, encoding="utf-8")
+    import clowder_analytics.ai.llm_provider as mod
+    monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
+    return cfg
+
+
+def test_load_provider_unknown_raises(env_style_yaml):
     with pytest.raises(KeyError):
         load_provider("nonexistent_provider")
 
 
-def test_load_provider_missing_api_key_raises(monkeypatch):
+def test_load_provider_missing_api_key_raises(env_style_yaml, monkeypatch):
     """apiKey 环境变量未设时报错"""
-    monkeypatch.delenv("CSI_API_KEY", raising=False)
+    monkeypatch.delenv("TESTPROV_API_KEY", raising=False)
     with pytest.raises(RuntimeError) as e:
-        load_provider("csi")
-    assert "CSI_API_KEY" in str(e.value)
+        load_provider("testprov")
+    assert "TESTPROV_API_KEY" in str(e.value)
 
 
-def test_load_provider_with_api_key(monkeypatch):
+def test_load_provider_with_api_key(env_style_yaml, monkeypatch):
     """apiKey 环境变量设了能加载（不调真实 SDK）"""
-    monkeypatch.setenv("CSI_API_KEY", "sk-test")
-    p = load_provider("csi")
+    monkeypatch.setenv("TESTPROV_API_KEY", "sk-test")
+    p = load_provider("testprov")
     assert isinstance(p, OpenAICompatibleProvider)
     assert p.config.api_key == "sk-test"
     assert p.config.model == "GLM-5.2"
 
 
-def test_load_provider_default_is_csi(monkeypatch):
-    """不传 name 时取 default_provider=csi"""
-    monkeypatch.setenv("CSI_API_KEY", "sk-test")
+def test_load_provider_default_is_configured(env_style_yaml, monkeypatch):
+    """不传 name 时取 default_provider"""
+    monkeypatch.setenv("TESTPROV_API_KEY", "sk-test")
     p = load_provider()
-    assert p.config.name == "csi"
+    assert p.config.name == "testprov"
 
 
 # ===== 多 provider 多 model 配置（G13 通用 LLM 对接）=====
@@ -620,3 +649,116 @@ def test_llm_reviewer_max_tokens_reads_provider_config():
         f"max_tokens 应读 provider.config.max_tokens (4000)，"
         f"实际传了 {call_kwargs.get('max_tokens')}（llm_reviewer.py:40 硬编码 2000 同模式 bug）"
     )
+
+
+# ===== G14: api_key 直填 + 模型枚举 API + default_provider 兜底 =====
+
+_DIRECT_KEY_YAML = """
+default_provider: euler-y
+
+providers:
+  euler-y:
+    name: csi
+    base_url: http://localhost:9999/v1/
+    api_key: sk-test-direct-key-12345  # 直填 key 格式测试（假 key）
+    protocol: openai
+    timeout_seconds: 120
+    models:
+      GLM-5.3-Flash:
+        name: GLM-5.3-Flash
+        max_tokens: 4000
+      GLM-5.3:
+        name: GLM-5.3
+      Qwen3.8-Flash:
+        name: Qwen3.8-Flash
+
+  env-style:
+    name: env style provider
+    base_url: http://localhost:9999/v1/
+    api_key_env: ENV_STYLE_API_KEY
+    protocol: openai
+    model: m1  # 老格式：顶层单 model
+"""
+
+
+@pytest.fixture
+def direct_key_yaml(tmp_path, monkeypatch):
+    cfg = tmp_path / "ai_providers.yaml"
+    cfg.write_text(_DIRECT_KEY_YAML, encoding="utf-8")
+    import clowder_analytics.ai.llm_provider as mod
+    monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
+    return cfg
+
+
+def test_api_key_direct_field_no_env_needed(direct_key_yaml):
+    """api_key 直填字段：不需要环境变量，直接用配置里的 key"""
+    p = load_provider("euler-y", model="GLM-5.3-Flash")
+    assert p.config.api_key == "sk-test-direct-key-12345"
+    assert p.config.model == "GLM-5.3-Flash"
+
+
+def test_api_key_direct_takes_priority_over_env(direct_key_yaml, monkeypatch):
+    """api_key 直填优先于 api_key_env"""
+    monkeypatch.setenv("EULER_Y_API_KEY", "sk-from-env")
+    p = load_provider("euler-y")
+    # 直填的 key 优先
+    assert p.config.api_key == "sk-test-direct-key-12345"
+
+
+def test_list_providers_returns_provider_model_structure(direct_key_yaml):
+    """list_providers() 返回页面展示用的结构"""
+    from clowder_analytics.ai.llm_provider import list_providers
+    providers = list_providers()
+    assert isinstance(providers, list)
+    names = [p["name"] for p in providers]
+    assert "euler-y" in names
+    assert "env-style" in names
+    # euler-y 的 models 列表
+    euler = next(p for p in providers if p["name"] == "euler-y")
+    assert set(euler["models"]) == {"GLM-5.3-Flash", "GLM-5.3", "Qwen3.8-Flash"}
+    # 老格式顶层 model 也应出现在 models 里
+    # default_model 未写时 None
+    assert euler["default_model"] is None
+
+
+def test_list_providers_old_format_model_in_models(direct_key_yaml):
+    """老格式顶层 model 字段也出现在 list_providers 的 models 里"""
+    from clowder_analytics.ai.llm_provider import list_providers
+    providers = list_providers()
+    env_style = next(p for p in providers if p["name"] == "env-style")
+    assert env_style["models"] == ["m1"]
+    assert env_style["default_model"] == "m1"
+
+
+def test_default_provider_fallback_to_first(direct_key_yaml):
+    """default_provider 不存在时兜底取第一个 provider（不 KeyError）"""
+    from clowder_analytics.ai.llm_provider import get_default_provider_name
+    # yaml 里 default_provider: euler-y 存在
+    assert get_default_provider_name() == "euler-y"
+
+
+def test_default_provider_missing_falls_back(tmp_path, monkeypatch):
+    """default_provider 指向不存在的 provider 时取第一个"""
+    broken_yaml = """
+default_provider: nonexistent
+providers:
+  alpha:
+    name: alpha
+    base_url: http://localhost/v1/
+    api_key: sk-direct
+    protocol: openai
+    models:
+      a-model:
+        name: a-model
+"""
+    cfg = tmp_path / "broken.yaml"
+    cfg.write_text(broken_yaml, encoding="utf-8")
+    import clowder_analytics.ai.llm_provider as mod
+    monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
+    from clowder_analytics.ai.llm_provider import get_default_provider_name
+    assert get_default_provider_name() == "alpha"
+    # load_provider() 不传 name 也不炸
+    p = load_provider()
+    assert p.config.name == "alpha"

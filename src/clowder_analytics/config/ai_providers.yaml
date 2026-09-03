@@ -1,66 +1,50 @@
 # F002 AI Provider 配置（spec §5.3）
 #
 # 参考来源：opencode GLM-5.2 配置 + 铲屎官 AI SDK 风格（多 provider 多 model）
-# 安全策略：apiKey 不入库，走环境变量 <PROVIDER>_API_KEY
+# apiKey 两种配置方式：
+#   api_key: sk-xxx          # 直填（AI SDK 风格，优先）——🔴 仅限私有仓库 / 本地不入库配置
+#   api_key_env: ENV_NAME    # 走环境变量（key 不入库，安全默认，公开仓库必须用这种）
 #
 # 运行时切换：
-#   export CLOWDER_AI_PROVIDER=glm          # 选 provider
-#   export GLM_API_KEY=sk-xxx               # 对应 apiKey
-#   # 或在代码里 load_provider("glm", model="glm-5.2")
+#   load_provider("euler-y", model="GLM-5.3-Flash")
+#   # 或 CLI: jd-analyze run --llm --llm-provider euler-y --llm-model GLM-5.3-Flash
+#   # 或 web 页面 sidebar 模型切换
 #
 # 两种格式均支持：
 #   新格式（多 model）：providers.<name>.models.<model_id> map
 #   老格式（单 model）：providers.<name>.model 顶层字段
 
-default_provider: csi
+default_provider: euler-y
 
 providers:
-  # ===== 铲屎官主力 provider：GLM-5.2（新格式，多 model）=====
-  glm:
-    name: Zhipu GLM
-    base_url: http://76.53.227.83:4000/v1/
-    api_key_env: GLM_API_KEY
-    protocol: openai
-    timeout_seconds: 120
-    default_model: glm-5.2
-    models:
-      glm-5.2:
-        name: GLM-5.2
-        # 推理模型：max_tokens 要留出 reasoning_tokens 空间（≥2000）
-        max_tokens: 4000
-        temperature: 0.3
-
-  # ===== 铲屎官备用 provider：华为 Euler-Y（新格式，多 model）=====
+  # ===== 主力 provider（csi endpoint，key 只能访问 pool_0010 池）=====
+  # 注意：此 key 访问 Deepseek-V4-Flash / GLM-5.2 会 403（key_model_access_denied），
+  # 已实测可用的 model：GLM-5.3-Flash / GLM-5.3 / Qwen3.8-Flash / DeepSeek-V4-Pro / MiniMax-M3
+  # 🔴 key 走环境变量（公开仓库安全策略 spec §5.3）：
+  #   set EULER_Y_API_KEY=sk-xxx（本地 powershell: $env:EULER_Y_API_KEY="sk-xxx"）
   euler-y:
-    name: Huawei Euler-Y
-    base_url: https://aigateway.csitool.rnd.huawei.com/v1/
+    name: csi
+    base_url: http://113.46.219.251:8080/v1/
     api_key_env: EULER_Y_API_KEY
     protocol: openai
     timeout_seconds: 120
+    default_model: GLM-5.3-Flash
     models:
-      Qwen3.5-122B-A10B:
-        name: Qwen3.5-122B-A10B
+      GLM-5.3-Flash:
+        name: GLM-5.3-Flash
         max_tokens: 4000
-      Deepseek-V4-Flash:
-        name: Deepseek-V4-Flash
-      MiniMax-M2.7:
-        name: MiniMax-2.7
+        temperature: 0.3
+      GLM-5.3:
+        name: GLM-5.3
+        max_tokens: 4000
+      Qwen3.8-Flash:
+        name: Qwen3.8-Flash
+      DeepSeek-V4-Pro:
+        name: DeepSeek-V4-Pro
+      MiniMax-M3:
+        name: MiniMax-M3
 
-  # ===== 老格式示例（向后兼容，顶层单 model）=====
-  csi:
-    name: csi.ai
-    base_url: http://113.46.219.251:8080/v1/
-    api_key_env: CSI_API_KEY  # 从此环境变量取 apiKey
-    model: GLM-5.2
-    # OpenAI 兼容协议（chat completions）
-    protocol: openai
-    # 调用参数
-    # GLM-5.2 是推理模型，max_tokens 要留出 reasoning_tokens 空间（≥2000）
-    temperature: 0.3       # Plan 生成需稳定，低温
-    max_tokens: 4000       # 推理模型需要大 max_tokens（reasoning + output）
-    timeout_seconds: 120  # 推理模型延迟较高
-
-  # 备用 provider（占位，待配置）
+  # ===== 备用 provider（占位，老格式顶层 model 示例）=====
   anthropic:
     name: anthropic
     base_url: https://api.anthropic.com/v1/

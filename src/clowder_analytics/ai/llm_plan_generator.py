@@ -28,7 +28,8 @@ class LLMPlanGenerator(AIPlanGenerator):
     """用真实 LLM 生成 Plan（spec §5.1）
 
     构造：
-        provider = load_provider("csi")
+        provider = load_provider()  # 取 default_provider（见 ai_providers.yaml）
+        # 或指定：load_provider("euler-y", model="GLM-5.3-Flash")
         gen = LLMPlanGenerator(provider=provider)
         plan = gen.generate(question, dataset, intent)
     """
