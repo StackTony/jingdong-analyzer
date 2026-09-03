@@ -10,8 +10,11 @@ status: spec
 
 # F001: 京东品类品牌销售数据采集与分析工具
 
-> Status: spec | Owner: 郭嘉/奉孝 (@ragdoll-pa82)
+> Status: **frozen**（2026-09-03 铲屎官拍板：后续不再演进，存档保留）
+> Owner: 郭嘉/奉孝 (@ragdoll-pa82)
 > Reviewers: 关羽/云长 (code quality), 法正/孝直 (audit/determinism)
+
+> **冻结说明（2026-09-03）**：铲屎官拍板 F001 后续不再演进。本文档及已有代码（爬虫栈 / OCR 路线设计 / RPA 行为模拟分支）作为存档保留，不再按 Phase 0-4 路线图推进。登录墙 A/B/C 方案决策（原 spec §3.3 待决策项）随之取消。其"任意数据源 → 分析"的通用诉求已由 F002 的 DataSource Adapter 承接。
 
 ## Why
 

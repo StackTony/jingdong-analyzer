@@ -11,8 +11,10 @@ created: 2026-08-25
 
 | ID | Name | Status | Owner | Link |
 |----|------|--------|-------|------|
-| F001 | 京东品类品牌销售数据采集 | in-progress | 奉孝 | `docs/features/F001-jd-brand-analytics.md` |
+| F001 | 京东品类品牌销售数据采集 | **frozen**（2026-09-03 铲屎官拍板：后续不再演进） | 奉孝 | `docs/features/F001-jd-brand-analytics.md` |
 | F002 | 通用数据分析框架（双轨自进化） | in-progress | 文若/奉孝 | `docs/features/F002-universal-analytics-framework.md` |
+
+> **F001 冻结说明（2026-09-03）**：铲屎官拍板 F001 后续不演进。spec / 已有代码（京东爬虫栈、OCR 路线设计、RPA 行为模拟）保留存档不删除；登录墙 A/B/C 方案决策取消，Phase 0-4 路线图作废。F001 相关的复用价值已由 F002 的通用 DataSource Adapter（Excel/CSV/SQLite）承接。
 
 ## F002 合入后续（P7+ 候选）
 
