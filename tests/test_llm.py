@@ -858,3 +858,53 @@ def test_api_key_env_looking_like_key_rejected(two_layer_yaml):
     # match 用英文/变量名片段（避免 Windows GBK 控制台下中文 match 不稳）
     with _pytest.raises(RuntimeError, match=r"api_key_env.*EULER_Y_API_KEY.*ai_providers\.local\.yaml"):
         load_provider("euler-y")
+
+
+# ===== 关羽 review：api_key 直填主路径 + 占位符识别 =====
+# 铲屎官指令："LLM 配置采用 conf 文件里直接配置 api_key 的方式，不要用
+# api_key_env 的方式"。故：
+#   - ai_providers.yaml 直填 api_key: sk-xxx 占位符做模板
+#   - 占位符是模板占位，不是真 key，识别它 → 回退 env（若提供）→ 否则报"未配置"
+#   - 真实 key 写 ai_providers.local.yaml（gitignored）深合并覆盖占位符
+
+def test_placeholder_api_key_falls_back_to_env(two_layer_yaml, monkeypatch):
+    """api_key 是占位符（sk-xxx）且设了 env → 静默回退 env，不把占位符当真 key"""
+    main = two_layer_yaml / "ai_providers.yaml"
+    main.write_text(
+        "providers:\n"
+        "  euler-y:\n"
+        "    name: csi\n"
+        "    base_url: http://localhost:9999/v1/\n"
+        "    api_key: sk-xxx\n"
+        "    api_key_env: EULER_Y_API_KEY\n"
+        "    protocol: openai\n"
+        "    models:\n"
+        "      GLM-5.3-Flash:\n"
+        "        name: GLM-5.3-Flash\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EULER_Y_API_KEY", "sk-from-env-real")
+    p = load_provider("euler-y")
+    assert p.config.api_key == "sk-from-env-real"
+
+
+def test_placeholder_api_key_without_env_raises_clear(two_layer_yaml, monkeypatch):
+    """api_key 是占位符且无 env 兜底 → 明确报"未配置"，别把 sk-xxx 当真 key 用了"""
+    import clowder_analytics.ai.llm_provider as mod
+    main = two_layer_yaml / "ai_providers.yaml"
+    main.write_text(
+        "providers:\n"
+        "  euler-y:\n"
+        "    name: csi\n"
+        "    base_url: http://localhost:9999/v1/\n"
+        "    api_key: sk-xxx\n"
+        "    api_key_env: EULER_Y_API_KEY\n"
+        "    protocol: openai\n"
+        "    models:\n"
+        "      GLM-5.3-Flash:\n"
+        "        name: GLM-5.3-Flash\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EULER_Y_API_KEY", raising=False)
+    with _pytest.raises(RuntimeError, match=r"apiKey 未配置"):
+        load_provider("euler-y")

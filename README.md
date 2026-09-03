@@ -53,25 +53,35 @@ pip install -e ".[ai]"   # scikit-learn 在 ai extras 里
 
 ### 配置 LLM Provider（可选）
 
-若用真实 LLM（`--llm` flag），需配置 `CSI_API_KEY` 环境变量。Provider 配置文件：
+若用真实 LLM（`--llm` flag），apiKey 直接配在 config 文件里（直填 `api_key` 字段）。Provider 配置文件：
 
 ```
-src/clowder_analytics/config/ai_providers.yaml
+src/clowder_analytics/config/ai_providers.yaml          # git 跟踪的模板，只留占位符 sk-xxx
+src/clowder_analytics/config/ai_providers.local.yaml    # gitignored，真实 key 写这里
 ```
 
-默认 provider 是 `csi`（GLM-5.2，OpenAI 兼容协议）。配置项含义：
-- `api_key_env: CSI_API_KEY` — apiKey 从环境变量取，不入库
-- `max_tokens: 4000` — GLM-5.2 是推理模型，需留 reasoning_tokens 空间
+默认 provider 是 `euler-y`（csi endpoint，OpenAI 兼容协议）。配置方法：
+
+1. 复制模板为本地配置：`cp src/clowder_analytics/config/ai_providers.yaml src/clowder_analytics/config/ai_providers.local.yaml`
+2. 把 `euler-y` 下的 `api_key: sk-xxx` 占位符改成你的真实 key（`api_key_env` 可留作兜底）。
+
+`ai_providers.local.yaml` 会被深合并覆盖主配置，且已被 `.gitignore` 忽略（`*.local.yaml`），真实 key 不入库。
+
+配置项含义：
+- `api_key: sk-xxx` — 直填 key（主路径）；真实 key 只写 local.yaml
+- `api_key_env: EULER_Y_API_KEY` — 兜底：也可改用环境变量（`export EULER_Y_API_KEY=sk-xxx`），key 不入库
+- `max_tokens: 4000` — 推理模型需留 reasoning_tokens 空间
 - `temperature: 0.3` — Plan 生成需稳定低温
+- `models: ...` — 该 provider 支持的 model 列表（`default_model` 为默认）
 
-PowerShell 设置环境变量：
+PowerShell 设置环境变量（兜底路径）：
 ```powershell
-$env:CSI_API_KEY = "sk-xxx"
+$env:EULER_Y_API_KEY = "sk-xxx"
 ```
 
 bash / zsh：
 ```bash
-export CSI_API_KEY=sk-xxx
+export EULER_Y_API_KEY=sk-xxx
 ```
 
 ### CLI 使用

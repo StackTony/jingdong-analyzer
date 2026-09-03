@@ -1,7 +1,9 @@
 """F002 P3+ 真实 LLM Provider（spec §5.3）
 
 参考 opencode 配置：csi provider 是 OpenAI 兼容协议（chat completions）。
-apiKey 不入库，走环境变量（spec §5.3 安全策略）。
+apiKey 配置主路径 = 直填 api_key 字段（铲屎官偏好：conf 里直接配 key）。
+公开仓库安全约定：真实 key 只写 ai_providers.local.yaml（gitignored），
+入库的 ai_providers.yaml 只留占位符（sk-xxx）；api_key_env 环境变量为兜底。
 
 LLMProvider 抽象：
 - chat(messages, **opts) -> str
@@ -129,9 +131,10 @@ def _load_yaml_config() -> dict[str, Any]:
     """加载 ai_providers.yaml（缓存）+ ai_providers.local.yaml 深合并覆盖
 
     两层配置（G15）：
-    - 主配置 ai_providers.yaml：git 跟踪，key 走 api_key_env（安全模板）
-    - local 配置 ai_providers.local.yaml：gitignored，直填 api_key 等本地
-      覆盖项，深合并进主配置（铲屎官偏好：conf 里直接配 key，仓库只留模板）
+    - 主配置 ai_providers.yaml：git 跟踪，api_key 直填占位符（sk-xxx 模板），
+      api_key_env 作兜底（公开仓库不落真 key）
+    - local 配置 ai_providers.local.yaml：gitignored，直填真实 api_key 深合并
+      覆盖占位符（铲屎官偏好：conf 里直接配 key，仓库只留模板）
     """
     global _CONFIG_CACHE
     if _CONFIG_CACHE is None:
@@ -163,9 +166,9 @@ def load_provider(name: str | None = None, model: str | None = None) -> LLMProvi
     - 新格式（多 model）：providers.<name>.models.<model_id> map 结构
     - 老格式（单 model）：providers.<name>.model 顶层字段（向后兼容）
 
-    apiKey 两种配置方式：
-    - api_key: sk-xxx（直填，AI SDK 风格，优先）
-    - api_key_env: ENV_NAME（走环境变量，不入库，安全默认）
+    apiKey 两种配置方式（主路径 = 直填 api_key）：
+    - api_key: sk-xxx（直填，AI SDK 风格，优先；真实 key 写 local.yaml 不入库）
+    - api_key_env: ENV_NAME（兜底，走环境变量，key 不入库）
     """
     cfg = _load_yaml_config()
     if name is None:
@@ -180,7 +183,8 @@ def load_provider(name: str | None = None, model: str | None = None) -> LLMProvi
         api_key_env = p.get("api_key_env", f"{name.upper()}_API_KEY")
         raise RuntimeError(
             f"Provider {name} 的 apiKey 未配置。"
-            f"请在 yaml 写 api_key: sk-xxx，或 export {api_key_env}=sk-xxx 后重试。"
+            f"请在 ai_providers.local.yaml 写 api_key: <真实 key>（不入库），"
+            f"或 export {api_key_env}=<真实 key> 后重试。"
         )
 
     # 解析 model 配置（支持新格式 models map + 老格式顶层 model）
@@ -240,19 +244,35 @@ def _resolve_model(provider_cfg: dict, requested_model: str | None) -> tuple[str
     raise KeyError(f"Provider 配置缺少 model / models 字段")
 
 
-def _resolve_api_key(provider_cfg: dict, name: str) -> str:
-    """解析 apiKey：直填 api_key 优先，否则走 api_key_env 环境变量
+def _is_placeholder_key(value: str) -> bool:
+    """判断 api_key 值是否是占位符（sk-xxx 之类的模板占位，而非真 key）
 
-    铲屎官 AI SDK 风格：api_key 直接写在配置里（如私有 endpoint）。
-    安全默认仍是 api_key_env（key 不入库）。
+    入库模板 ai_providers.yaml 直填 api_key 时用的是占位符；识别它才能让
+    load_provider 继续回退 env / local.yaml 兜底，而不是把 "sk-xxx" 当真 key 用。
     """
-    # 1. 直填 api_key 优先
+    stripped = str(value).strip()
+    if not stripped:
+        return True
+    low = stripped.lower()
+    return low.startswith(("sk-xxx", "sk-your", "sk-abc"))
+
+
+def _resolve_api_key(provider_cfg: dict, name: str) -> str:
+    """解析 apiKey：直填 api_key 优先，否则回退 api_key_env 环境变量
+
+    主路径 = 直填 api_key（铲屎官偏好：conf 里直接配 key）。
+    直填的是占位符（sk-xxx）时视为未配置，回退 api_key_env（若提供），
+    两条都空则由 load_provider 报明确的"未配置"错误。
+
+    api_key_env 是兜底（私有 key 不入库写法），不再是推荐主路径。
+    """
+    # 1. 直填 api_key（主路径；占位符视为未配置，静默放行）
     direct = provider_cfg.get("api_key", "")
-    if direct:
+    if direct and not _is_placeholder_key(direct):
         return direct
-    # 2. 走环境变量
+    # 2. 回退 api_key_env 环境变量（兜底）
     api_key_env = provider_cfg.get("api_key_env", f"{name.upper()}_API_KEY")
-    # 值校验（G15，LL-049 现场复现防护）：api_key_env 是环境变量的名字，
+    # 值校验（LL-049 现场复现防护）：api_key_env 是环境变量的名字，
     # 不是 key 本身。填成 sk-xxx 说明把 key 填错了字段，当场指出而不是
     # 生成 "export sk-xxx=sk-xxx" 这种误导报错。
     if str(api_key_env).startswith("sk-"):

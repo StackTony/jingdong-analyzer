@@ -213,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--lib", default=None, help="Flow Library 目录")
     p_run.add_argument(
         "--llm", action="store_true",
-        help="用真实 LLM provider（需设 EULER_Y_API_KEY 环境变量，见 ai_providers.yaml）",
+        help="用真实 LLM provider（api_key 直填 ai_providers.local.yaml，见 ai_providers.yaml）",
     )
     p_run.add_argument(
         "--llm-provider", default=None,
