@@ -145,6 +145,8 @@ def env_style_yaml(tmp_path, monkeypatch):
     cfg.write_text(_ENV_STYLE_YAML, encoding="utf-8")
     import clowder_analytics.ai.llm_provider as mod
     monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    # G16 隔离修复：local.yaml 路径跟随 fixture（同 direct_key_yaml）
+    monkeypatch.setattr(mod, "_LOCAL_CONFIG_PATH", tmp_path / "ai_providers.local.yaml")
     monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
     return cfg
 
@@ -222,6 +224,8 @@ def multi_provider_yaml(tmp_path, monkeypatch):
     cfg.write_text(_MULTI_PROVIDER_YAML, encoding="utf-8")
     import clowder_analytics.ai.llm_provider as mod
     monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    # G16 隔离修复：local.yaml 路径跟随 fixture（同 direct_key_yaml）
+    monkeypatch.setattr(mod, "_LOCAL_CONFIG_PATH", tmp_path / "ai_providers.local.yaml")
     monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
     return cfg
 
@@ -285,6 +289,8 @@ providers:
     cfg.write_text(old_yaml, encoding="utf-8")
     import clowder_analytics.ai.llm_provider as mod
     monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    # G16 隔离修复：local.yaml 路径跟随 fixture（同 direct_key_yaml）
+    monkeypatch.setattr(mod, "_LOCAL_CONFIG_PATH", tmp_path / "ai_providers.local.yaml")
     monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
     monkeypatch.setenv("CSI_API_KEY", "sk-test")
     p = load_provider("csi")
@@ -687,6 +693,10 @@ def direct_key_yaml(tmp_path, monkeypatch):
     cfg.write_text(_DIRECT_KEY_YAML, encoding="utf-8")
     import clowder_analytics.ai.llm_provider as mod
     monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    # G16 隔离修复：local.yaml 路径必须跟随 fixture 走，
+    # 否则包内真实 ai_providers.local.yaml 会被深合并进测试配置，
+    # 污染测试 key（实测表现为 2 用例拿到真实 key 断言失败）
+    monkeypatch.setattr(mod, "_LOCAL_CONFIG_PATH", tmp_path / "ai_providers.local.yaml")
     monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
     return cfg
 
@@ -756,6 +766,8 @@ providers:
     cfg.write_text(broken_yaml, encoding="utf-8")
     import clowder_analytics.ai.llm_provider as mod
     monkeypatch.setattr(mod, "_CONFIG_PATH", cfg)
+    # G16 隔离修复：local.yaml 路径跟随 fixture（同 direct_key_yaml）
+    monkeypatch.setattr(mod, "_LOCAL_CONFIG_PATH", tmp_path / "ai_providers.local.yaml")
     monkeypatch.setattr(mod, "_CONFIG_CACHE", None)
     from clowder_analytics.ai.llm_provider import get_default_provider_name
     assert get_default_provider_name() == "alpha"
