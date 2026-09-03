@@ -34,6 +34,7 @@ reviewers:
 | 2026-09-02 | 通用 LLM 多 provider 多 model 对接 G13：`ai_providers.yaml` 新格式 `providers.<name>.models.<model_id>` map + `default_model` 字段；`load_provider(name, model)` 运行时选 provider 下任意 model；向后兼容老格式顶层 `model`；新增 glm / euler-y 配置示例（feat/f002-llm-multi-provider，TDD 红绿，237 passed 无回归） |
 | 2026-09-02 | 模型展示 + 切换 + api_key 直填 G14：`api_key` 直填字段（AI SDK 风格，优先于 `api_key_env`，私有网关免环境变量）；`list_providers()` 枚举 + `get_default_provider_name()` 兜底；web sidebar Provider/Model selectbox + 当前模型展示；CLI `--llm-model` 参数。euler-y 精简为 csi endpoint 单 provider 5 model（GLM-5.3-Flash / GLM-5.3 / Qwen3.8-Flash / DeepSeek-V4-Pro / MiniMax-M3，key 限 pool_0010）。三 model 连通性实测 OK（feat/f002-model-switch，TDD 红绿，248 passed 无回归） |
 | 2026-09-03 | **P0 安全事故止损 + merge main**：关羽 review 发现 G14 初版把真实 csi key 明文 commit（0982091）并 push 到公开仓库。止损三件套：① 代码层撤出（生产 yaml 改 `api_key_env: EULER_Y_API_KEY`，测试 fixture 换假 key + localhost，docstring 修正）② force-push 重写分支历史（squash 为 c0322b6，tree 与关羽复核放行的 2ef4555 一致，含 key 的 0982091/0b3852c 从远端抹除）③ 铲屎官 revoke key。教训沉淀：公开仓库 yaml 永远走 env，key 哪怕"泄露面可控"也不入库 |
+| 2026-09-03 | 两层配置直填 key + 运行进度条 G15 merged：`ai_providers.local.yaml`（gitignored `*.local.yaml`）深合并覆盖主配置；api_key 直填为主路径（`_is_placeholder_key` 识别 sk-xxx 占位符回退 env 兜底，两条都空明确报错）；`api_key_env` 值校验防填错。进度条：`run()/execute()` 加 `progress(stage, current, total, detail)` 回调（向后兼容，异常双层兜底不反噬主流程），Web `st.status` 分阶段容器 + execute 单进度条替代死转圈，CLI 逐阶段打印 stderr（feat/f002-local-conf，TDD 红绿，260 passed 无回归，关羽跨家族 review 放行） |
 
 ## Why
 
