@@ -26,6 +26,7 @@ from clowder_analytics.adapters.excel import ExcelAdapter
 from clowder_analytics.ai.fake import FakePlanGenerator, FakeReviewer
 from clowder_analytics.flow_library.promoter import Promoter
 from clowder_analytics.flow_library.store import FlowLibrary
+from clowder_analytics.orchestrator.progress_display import CliProgressCallback
 from clowder_analytics.orchestrator.run import run
 
 # Windows 控制台默认 GBK，强制 UTF-8 输出避免中文乱码
@@ -106,6 +107,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         generator=generator,
         reviewer=reviewer,
         enable_review=enable_review,
+        progress=CliProgressCallback().callback,
     )
 
     print(f"=== 运行结果 ===")
@@ -211,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--lib", default=None, help="Flow Library 目录")
     p_run.add_argument(
         "--llm", action="store_true",
-        help="用真实 LLM provider（需设 EULER_Y_API_KEY 环境变量，见 ai_providers.yaml）",
+        help="用真实 LLM provider（api_key 直填 ai_providers.local.yaml，见 ai_providers.yaml）",
     )
     p_run.add_argument(
         "--llm-provider", default=None,

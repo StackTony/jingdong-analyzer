@@ -25,6 +25,10 @@ from clowder_analytics.atomic.spec import ChartSpec
 from clowder_analytics.adapters.base import Dataset
 from clowder_analytics.orchestrator.plan import OpError, Plan, RunResult, Step
 
+# 进度回调：progress(stage, current, total, detail=None)
+# 回调抛异常由调用方（run._safe_progress）兜底，executor 内不吞不抛
+ProgressCallback = Callable[..., None]
+
 
 # ===== op 注册表 =====
 
@@ -56,12 +60,18 @@ def get_op_registry() -> dict[str, Callable]:
 
 # ===== 执行器 =====
 
-def execute(plan: Plan, dataset: Dataset) -> RunResult:
+def execute(
+    plan: Plan, dataset: Dataset, progress: ProgressCallback | None = None,
+) -> RunResult:
     """执行 Plan，返回 RunResult（spec §6.2）
 
     Args:
         plan: Plan 对象
         dataset: Dataset（取 .df 作为初始 df）
+        progress: 可选进度回调 progress(stage, current, total, detail)。
+            execute 阶段逐步回调 (stage='execute', current=第几步, total=总步数,
+            detail=op 名)；失败步骤同样回调。回调抛异常不影响执行
+            （run() 包装为 _safe_progress 吞掉渲染异常）。
 
     Returns:
         RunResult（df + charts + log + route/plan_id 元信息）
@@ -69,8 +79,11 @@ def execute(plan: Plan, dataset: Dataset) -> RunResult:
     df: pd.DataFrame = dataset.df
     run_log: list[dict[str, Any]] = []
     charts: list[ChartSpec] = []
+    total_steps = len(plan.steps)
 
-    for step in plan.steps:
+    for idx, step in enumerate(plan.steps):
+        if progress is not None:
+            _report(progress, "execute", idx + 1, total_steps, step.op)
         entry = {"step": step.op, "ok": False}
         try:
             op_fn = _OP_REGISTRY.get(step.op)
@@ -115,3 +128,13 @@ def execute(plan: Plan, dataset: Dataset) -> RunResult:
         review=None,
         plan_id=plan.plan_id,
     )
+
+
+def _report(progress: ProgressCallback, stage: str, current: int, total: int,
+            detail: str | None = None) -> None:
+    """安全调进度回调：渲染异常不反噬执行主流程"""
+    try:
+        progress(stage, current, total, detail)
+    except Exception:
+        # 进度展示是锦上添花，UI 渲染异常不能中断分析
+        pass

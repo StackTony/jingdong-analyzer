@@ -1,9 +1,13 @@
 # F002 AI Provider 配置（spec §5.3）
 #
 # 参考来源：opencode GLM-5.2 配置 + 铲屎官 AI SDK 风格（多 provider 多 model）
-# apiKey 两种配置方式：
-#   api_key: sk-xxx          # 直填（AI SDK 风格，优先）——🔴 仅限私有仓库 / 本地不入库配置
-#   api_key_env: ENV_NAME    # 走环境变量（key 不入库，安全默认，公开仓库必须用这种）
+# apiKey 主路径 = 直填 api_key 字段；api_key_env 环境变量仅作兜底。
+# 🔴 公开仓库安全约定（真实 key 永不入库）：
+#   - 本模板 ai_providers.yaml 只留占位符，真实 key 写在 gitignored 的
+#     ai_providers.local.yaml（同目录，*.local.yaml 已被 .gitignore 忽略）
+#   - 两种写法均支持：
+#       api_key: sk-xxx          # 直填（主路径，AI SDK 风格）
+#       api_key_env: ENV_NAME    # 兜底走环境变量（key 不入库）
 #
 # 运行时切换：
 #   load_provider("euler-y", model="GLM-5.3-Flash")
@@ -20,11 +24,12 @@ providers:
   # ===== 主力 provider（csi endpoint，key 只能访问 pool_0010 池）=====
   # 注意：此 key 访问 Deepseek-V4-Flash / GLM-5.2 会 403（key_model_access_denied），
   # 已实测可用的 model：GLM-5.3-Flash / GLM-5.3 / Qwen3.8-Flash / DeepSeek-V4-Pro / MiniMax-M3
-  # 🔴 key 走环境变量（公开仓库安全策略 spec §5.3）：
-  #   set EULER_Y_API_KEY=sk-xxx（本地 powershell: $env:EULER_Y_API_KEY="sk-xxx"）
+  # 🔴 真实 key 写 ai_providers.local.yaml（gitignored），此处只留占位符；
+  #    占位符未替换前会走 api_key_env 兜底（EULER_Y_API_KEY），两条都空则报错提示。
   euler-y:
     name: csi
     base_url: http://113.46.219.251:8080/v1/
+    api_key: sk-xxx
     api_key_env: EULER_Y_API_KEY
     protocol: openai
     timeout_seconds: 120
@@ -48,6 +53,7 @@ providers:
   anthropic:
     name: anthropic
     base_url: https://api.anthropic.com/v1/
+    api_key: sk-xxx
     api_key_env: ANTHROPIC_API_KEY
     model: claude-sonnet-4-5
     protocol: anthropic

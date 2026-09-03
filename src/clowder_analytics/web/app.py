@@ -189,7 +189,12 @@ def main():
             st.text(f"问题: {question}")
 
     if st.button("🚀 运行分析", type="primary", disabled=not question):
-        with st.spinner("运行中..."):
+        # 进度展示：st.status 分阶段容器 + execute 进度条（替代原死转圈 spinner）
+        from clowder_analytics.orchestrator.progress_display import StProgressHolder
+
+        with st.status("🚀 运行分析中...", expanded=True) as status:
+            holder = StProgressHolder()
+            holder.bind(status)
             # G14：按 sidebar 模型选择构造 generator/reviewer（真实 LLM / Fake）
             generator, reviewer = _build_ai_stack(llm_choice)
             result = run(
@@ -199,9 +204,14 @@ def main():
                 generator=generator,
                 reviewer=reviewer,
                 enable_review=enable_review,
+                progress=holder.callback,
             )
-            st.session_state.last_result = result
-            st.session_state.last_question = question
+            status.update(
+                label=f"✅ 运行完成（{result.duration_ms / 1000:.1f}s）",
+                state="complete", expanded=False,
+            )
+        st.session_state.last_result = result
+        st.session_state.last_question = question
 
     # ===== 右侧：结果 =====
     result = st.session_state.last_result
