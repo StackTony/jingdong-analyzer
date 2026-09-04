@@ -45,13 +45,25 @@ def render(chart_spec: ChartSpec, mode: str = "static", max_rows: int | None = N
     if max_rows is not None and t != "heatmap":
         df = df.head(max_rows)
 
+    # G17 根因B：ChartSpec.y 可能是 list（model.aggregate 恒产出
+    # y=list(agg.keys())，哪怕单指标）。旧代码 go.Bar(y=df[list]) 让 plotly
+    # 收到 2D 嵌套数组 → 空图/畸形图，多指标也只画一个错 trace（「维度少」）。
+    # 修法：bar/line 逐列展开——单列 y → 1 trace，多列 y → N trace（每列命名）。
     if t == "bar":
-        fig = go.Figure([go.Bar(x=df[chart_spec.x], y=df[chart_spec.y])])
+        traces = [
+            go.Bar(x=df[chart_spec.x], y=df[col], name=col)
+            for col in _y_cols(chart_spec.y)
+        ]
+        fig = go.Figure(traces)
         fig.update_layout(title=chart_spec.title)
         return fig
 
     if t == "line":
-        fig = go.Figure([go.Scatter(x=df[chart_spec.x], y=df[chart_spec.y], mode="lines+markers")])
+        traces = [
+            go.Scatter(x=df[chart_spec.x], y=df[col], mode="lines+markers", name=col)
+            for col in _y_cols(chart_spec.y)
+        ]
+        fig = go.Figure(traces)
         fig.update_layout(title=chart_spec.title)
         return fig
 
@@ -71,3 +83,8 @@ def render(chart_spec: ChartSpec, mode: str = "static", max_rows: int | None = N
         return fig
 
     raise ValueError(f"未知 chart type: {t}")
+
+
+def _y_cols(y: str | list[str]) -> list[str]:
+    """归一化 ChartSpec.y 为列名列表（G17：str → [str]，list → 原样）"""
+    return [y] if isinstance(y, str) else list(y)

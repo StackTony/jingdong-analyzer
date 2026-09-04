@@ -266,3 +266,41 @@ def test_scan_and_promote_idempotent_no_duplicates(promoter, library):
     # 第三次：仍然 0（确认幂等稳定）
     third = promoter.scan_and_promote()
     assert len(third) == 0
+
+
+# ===== G17 根因A 护栏：源 Plan 已删时不得从 run 记录复活晋升 =====
+#
+# 污染清理场景：删掉 fake plan 与 tpl 后，runs.jsonl 里残留的 ≥3 条成功
+# run 记录仍会让 scan_and_promote 重新造出模板（错误图复活）。
+# 契约：promote() 依赖 load_plan(plan_id)——源 Plan 不存在时返回 None，
+# 不晋升。这条护栏保证「删 plan 即断根」，清理持久有效。
+
+
+def test_scan_and_promote_skips_when_source_plan_deleted(promoter, library):
+    """run 记录满足晋升条件，但源 Plan 已删 → 不复活晋升"""
+    # 先建 plan + 3 次成功 run（满足晋升）
+    library.save_plan(Plan(plan_id="ghost", intent="X", schema_fingerprint="fp_g", steps=[]))
+    for _ in range(3):
+        library.save_run(_run_record("fp_g", "X", success=True, plan_id="ghost"))
+
+    # 断根：删除源 Plan（保留 run 记录，模拟污染清理现场）
+    library.delete_plan("ghost")
+
+    promoted = promoter.scan_and_promote()
+    assert promoted == [], (
+        f"源 Plan 已删时不应复活晋升，实际晋升 {promoted}——"
+        f"清理会被残留 run 记录回滚"
+    )
+    # 且库里没有 ghost 来源的模板
+    assert all(
+        t.promoted_from_plan_id != "ghost" for t in library.list_templates()
+    )
+
+
+def test_promote_returns_none_when_plan_missing(promoter, library):
+    """promote 直接调用：plan_id 无对应 Plan → None（不抛、不造空模板）"""
+    for _ in range(3):
+        library.save_run(_run_record("fp_h", "Y", success=True, plan_id="gone"))
+    assert promoter.promote("fp_h", "Y", "gone") is None
+    assert library.list_templates() == []
+
