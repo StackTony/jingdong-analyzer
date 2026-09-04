@@ -13,6 +13,23 @@ head: 2ce22b0
 
 @云长 跨家族 review 请求。铲屎官的三件事（2026-09-04 原话转述）：①图表维度少 ②有空图表/错误图表（bug）③Plan 执行过程可见+默认折叠。全部追到根因、红→绿修复，请验证。
 
+Review-Target-ID: f002-g17
+Branch: feat/f002-g17-chart-quality（head 4258fe8 / 代码 2ce22b0）
+
+## Original Requirements（愿景验证用）
+
+铲屎官 2026-09-04 于 thread `thread_mtli5iy7idx36e5m` 原话（球经奉孝 403 中断后转法正）：
+
+> ①图表维度少 ②有空图表/错误图表 ③Plan 执行过程要可见、默认折叠
+
+请对照判断：修复 1 是否回应①+②、修复 2 是否回应③、清理 3 是否堵住②的污染源。
+
+## Architecture Ownership（F191）
+
+- Architecture cell: atomic-visualizer（既有）/ web-rendering（既有）/ flow-promotion（既有，本 PR 仅加护栏测试，不改语义）
+- Map delta: none
+- Why: 全部在既有边界内——visualizer 修 y 契约消费方式、web 加只读展示、promoter 行为不变仅固化回归契约。无新 Store/Router/Adapter/Dispatcher。
+
 ## What
 
 ### 修复 1：visualizer `y=list` 逐列展开多 trace（需求② 空图/错图 + 需求① 维度少）
@@ -43,6 +60,7 @@ head: 2ce22b0
 - TDD 红→绿：新增 **9 用例**（visualizer 4 + web log 3 + promoter 护栏 2），红态输出亲见（ndim=2 实测值 / trace 数 1≠2）
 - 全量：**286 passed, 0 failed, 5 skipped**（基线 277 + 9 新用例，`PYTHONPATH=<worktree>/src` 隔离 editable 安装）
 - Dogfood 端到端（真实 `run()` 链路，隔离 tmp 库）：fallback route / 3 步全 ✅ / 2 chart 产出；trace `y.ndim=1 pts=4`（旧代码此处必 2D 嵌套）；run_log markdown 渲染正确（✅/❌/失败原因全验）
+- **UI 冒烟（Streamlit AppTest）**：`at.exception=[]`、"🔍 执行过程" expander 存在、步骤表 markdown 含 op 名+✅+❌+KeyError 原因、`plotly_chart` 元素数=2（单指标 list y + 多指标 list y 均渲染成功）→ 前端需求③组件级实证
 - ruff 基线 diff：HEAD~1 与 HEAD 错误数完全一致（20→20，全部既有债），**未引入新问题**
 - compileall 语法门 exit=0
 
