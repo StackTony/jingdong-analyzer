@@ -46,13 +46,13 @@ Branch: feat/f002-g17-chart-quality（head 4258fe8 / 代码 2ce22b0）
 ### 清理 3：fake 污染产物删除 + 断根护栏（需求② 错误图表的源头之一）
 
 - **根因链（runs.jsonl + 文件时间戳实锤）**：FakePlanGenerator 产物（plan_id 恒 `fake-` 前缀，ai/fake.py:45）经 fallback 落盘 → 同 (fp,intent) 请求 B 轨复用凑满 ≥3 成功 → `scan_and_promote` 晋升 → `tpl-fake-da4d81cc-趋势分析.yaml` 写进**包内置模板库**。intent=趋势分析、steps=aggregate → 用户问"趋势"命中它出**错图**（名不副实）。且 fake 的"趋势分析无 datetime 列退化 aggregate"（fake.py:134-140）本是测试兜底逻辑，晋升成用户资产后语义漂移。
-- **已删**：`tpl-fake-da4d81cc-趋势分析.yaml` + `plans/fake-da4d81cc.json`（均 gitignored 的本机运行时残留，从未进 git；归档 `review-notes/quarantine-2026-09-04/`）。`runs/runs.jsonl` 5 条 fake 历史行**保留**（事实记录不篡改）。
+- **已删**：`tpl-fake-da4d81cc-趋势分析.yaml` + `plans/fake-da4d81cc.json`（均 gitignored 的本机运行时残留，从未进 git）。证据快照 `review-notes/quarantine-2026-09-04/` **commit 进本分支**（与清理动作、护栏测试同 PR 进历史，追溯性最强；云长 review 指出悬空未跟踪=没留证，已收）。`runs/runs.jsonl` 5 条 fake 历史行**保留**（事实记录不篡改）。
 - **护栏测试**（2 用例）：源 Plan 已删时 `promote/scan_and_promote` 不得从残留 run 记录复活晋升——保证清理持久有效。**真实库实测** `scan_and_promote() == []`，templates 回到 3 个冷启动。
 
 ## Why / Tradeoff
 
-- **promoter 晋升门槛（≥3 全 0 分 run 可晋升，无 user_adopted 要求）不改**：spec §7.3 原意如此；收紧是产品语义变更，已记 BACKLOG 候选，待铲屎官拍板（见 Open Questions）。
-- **测试 Fake 污染包库的根治（tmp store fixture / CLI 默认库改用户目录）不在本 PR**：属测试卫生/CLI 设计变更，与图表质量正交；已记 BACKLOG。
+- **Fake 污染包库的根治 = 测试隔离（tmp store fixture），属主因**：`test_cold_start.py` 等用 `FlowLibrary()` 默认库（包内目录）+ Fake generator，污染直接落盘。**这是防再生的根治项**，属测试卫生变更、与本 PR 正交，不在本 PR 做——将在 merge 后同步 main 时补进 BACKLOG（hot）。
+- **promoter 晋升门槛收紧（如要求 ≥1 次 user_adopted）只是防御性加固，不是主修复**（云长 review 第 6 点归因修正，已收）：就算收紧，测试污染照样落盘污染 runs/plans，只是不再晋升成 tpl。且属 spec §7.3 语义变更 → 愿景级决策留 @co-creator 拍板，不擅动。
 - **`_format_run_log` 是纯函数**：与 web 渲染解耦，可单测（本仓 web 测试风格即纯函数级，无 AppTest）。
 
 ## Evidence

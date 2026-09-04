@@ -1,0 +1,16 @@
+template_id: tpl-fake-da4d81cc-趋势分析
+intent: 趋势分析
+schema_fingerprint: 1319f9884b6a1088
+steps:
+- op: model.aggregate
+  args:
+    group_by:
+    - 店铺名(shopName)
+    agg:
+      销量(totalSales): sum
+reviewer_enabled: false
+fallback_strategy: abort_on_first_error
+created_at: '2026-09-03T02:54:20+00:00'
+promoted_from_plan_id: fake-da4d81cc
+stability: candidate
+confidence: 0.0
