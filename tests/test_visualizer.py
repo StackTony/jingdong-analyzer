@@ -104,3 +104,79 @@ def test_render_no_max_rows_passes_full_data():
     spec = ChartSpec(type="bar", data=df, x="brand", y="sales")
     fig = render(spec, mode="static")
     assert len(fig.data[0].x) == 3
+
+
+# ===== G17 根因B：y 为 list（aggregate 单/多指标）→ 空图/错图修复 =====
+#
+# 现象：model.aggregate 产出 ChartSpec.y = list(agg.keys())（永远 list，哪怕单指标）。
+# 旧 visualizer 直接 go.Bar(y=df[chart_spec.y])，df[列表] 返回 DataFrame，
+# 喂给 plotly 得到 2D 嵌套（如 [[50],[20],[30]]）→ 渲染空图/畸形图。
+# 多指标时更只画一个错 trace（铲屎官「图表维度少」）。
+# 修法：y=list 时每列展开成独立一维 trace（单元素 list→1 trace，多元素→N trace）。
+
+
+def test_render_bar_single_element_list_y_is_flat_1d():
+    """y=['col']（aggregate 单指标）→ trace.y 必须是一维扁平，不是 2D 嵌套"""
+    import numpy as np
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    df = pd.DataFrame({"shop": ["A", "B", "C"], "sales": [50, 20, 30]})
+    spec = ChartSpec(type="bar", data=df, x="shop", y=["sales"])  # list 单元素
+    fig = render(spec, mode="static")
+    y = np.asarray(fig.data[0].y)
+    assert y.ndim == 1, f"y 应为一维扁平，实际 ndim={y.ndim} shape={y.shape}"
+    assert list(y) == [50, 20, 30]
+
+
+def test_render_bar_multi_y_produces_one_trace_per_column():
+    """y=['sales','gmv']（aggregate 多指标）→ 每个指标一个 trace（多系列）"""
+    import numpy as np
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    df = pd.DataFrame({
+        "shop": ["A", "B", "C"],
+        "sales": [50, 20, 30],
+        "gmv": [500, 200, 300],
+    })
+    spec = ChartSpec(type="bar", data=df, x="shop", y=["sales", "gmv"])
+    fig = render(spec, mode="static")
+    assert len(fig.data) == 2, f"多指标应产出 2 个 trace，实际 {len(fig.data)}"
+    # 每个 trace 的 y 都是一维，且值正确
+    assert list(np.asarray(fig.data[0].y)) == [50, 20, 30]
+    assert list(np.asarray(fig.data[1].y)) == [500, 200, 300]
+    # trace 命名区分（图例可读）
+    assert {fig.data[0].name, fig.data[1].name} == {"sales", "gmv"}
+
+
+def test_render_line_multi_y_produces_traces():
+    """line 图同样支持 y=list 多系列（trend 未来多列场景 / 保持契约一致）"""
+    import numpy as np
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    df = pd.DataFrame({
+        "month": ["2026-01", "2026-02", "2026-03"],
+        "sales": [10, 20, 30],
+        "orders": [1, 2, 3],
+    })
+    spec = ChartSpec(type="line", data=df, x="month", y=["sales", "orders"])
+    fig = render(spec, mode="static")
+    assert len(fig.data) == 2
+    assert list(np.asarray(fig.data[0].y)) == [10, 20, 30]
+
+
+def test_render_bar_multi_y_respects_max_rows():
+    """多指标 + max_rows 采样：每个 trace 都只喂前 N 行"""
+    import numpy as np
+    if not _plotly_available():
+        pytest.skip("plotly 未装")
+    df = pd.DataFrame({
+        "brand": [f"b{i}" for i in range(100)],
+        "sales": list(range(100)),
+        "gmv": list(range(100, 200)),
+    })
+    spec = ChartSpec(type="bar", data=df, x="brand", y=["sales", "gmv"])
+    fig = render(spec, mode="static", max_rows=10)
+    assert len(fig.data) == 2
+    assert len(fig.data[0].x) == 10
+    assert len(np.asarray(fig.data[0].y)) == 10
+    assert len(np.asarray(fig.data[1].y)) == 10

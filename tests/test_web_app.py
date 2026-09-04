@@ -170,3 +170,48 @@ def test_build_ai_stack_unknown_model_falls_back_fake():
     gen, rev = _build_ai_stack(("euler-y", "nonexistent-model", True))
     assert isinstance(gen, FakePlanGenerator)
     assert isinstance(rev, FakeReviewer)
+
+
+# ===== G17 需求③：Plan 执行过程可见 + 默认折叠 =====
+#
+# 现状：结果区只有 metric「执行步骤 2/3」，result.log 逐步明细（每步 op、
+# 成败、错误、chart 类型）完全没渲染——用户看不到 Plan 做了什么。
+# 修法：_format_run_log 纯函数渲染 markdown 步骤表（可单测），
+# app 层挂 st.expander("🔍 执行过程", expanded=False) 默认折叠。
+
+
+def test_format_run_log_shows_each_step_with_status():
+    """每步渲染：序号 + op 名 + 成败标记"""
+    from clowder_analytics.web.app import _format_run_log
+
+    log = [
+        {"step": "clean.normalize_text", "ok": True, "report": {"rows": 3}},
+        {"step": "model.aggregate", "ok": True, "report": {"chart_spec": "bar"}},
+        {"step": "model.topn", "ok": False, "err": "KeyError: 'missing'"},
+    ]
+    md = _format_run_log(log)
+    assert "clean.normalize_text" in md
+    assert "model.aggregate" in md
+    assert "model.topn" in md
+    # 成功步有通过标记，失败步有失败标记 + 错误原因
+    assert "✅" in md
+    assert "❌" in md
+    assert "KeyError" in md
+
+
+def test_format_run_log_renders_chart_hint():
+    """model 步的 report.chart_spec 提示产出图表类型（过程可见）"""
+    from clowder_analytics.web.app import _format_run_log
+
+    log = [{"step": "model.trend", "ok": True, "report": {"chart_spec": "line"}}]
+    md = _format_run_log(log)
+    assert "line" in md
+
+
+def test_format_run_log_empty_returns_placeholder():
+    """空 log → 占位文本，不抛"""
+    from clowder_analytics.web.app import _format_run_log
+
+    md = _format_run_log([])
+    assert isinstance(md, str)
+    assert md != ""

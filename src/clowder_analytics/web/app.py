@@ -256,6 +256,15 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
     if result.matched_plan_id:
         st.write(f"**命中 Plan**: {result.matched_plan_id}")
 
+    # G17 需求③：Plan 执行过程可见 + 默认折叠（每步成败/错误/图表产出）
+    if result.log:
+        with st.expander(
+            f"🔍 执行过程（{sum(1 for s in result.log if s.get('ok'))}"
+            f"/{len(result.log)} 步成功）",
+            expanded=False,
+        ):
+            st.markdown(_format_run_log(result.log))
+
     st.subheader("数据结果")
     st.dataframe(result.df.head(50), use_container_width=True)
 
@@ -295,6 +304,35 @@ def _save_feedback(library: FlowLibrary, result, adopted: bool):
         user_adopted=adopted,
     )
     library.save_run(rec)
+
+
+def _format_run_log(log: list[dict]) -> str:
+    """把 executor run_log 渲染成 markdown 步骤表（G17 需求③：过程可见）
+
+    每步一行：序号 + 成败标记 + op 名 + 人类可读摘要。
+    model 步的 report.chart_spec 显示产出的图表类型；失败步显示错误原因。
+    """
+    if not log:
+        return "_本次运行没有产生步骤日志_"
+    lines = [
+        f"{idx}. {'✅' if e.get('ok') else '❌'} `{e.get('step', '?')}`{_step_detail(e)}"
+        for idx, e in enumerate(log, start=1)
+    ]
+    return "\n".join(lines)
+
+
+def _step_detail(entry: dict) -> str:
+    """从单条 run_log entry 提取摘要：成功取 report 关键字段，失败取 err"""
+    if not entry.get("ok"):
+        err = entry.get("err")
+        return f" — 失败：{err}" if err else " — 失败"
+    report = entry.get("report")
+    if not isinstance(report, dict) or not report:
+        return ""
+    if "chart_spec" in report:
+        return f" → 产出 {report['chart_spec']} 图"
+    bits = [f"{k}={v}" for k, v in list(report.items())[:2]]
+    return f" — {', '.join(bits)}"
 
 
 # ===== G16: Flow Library 管理（查看/更新/删除）=====
