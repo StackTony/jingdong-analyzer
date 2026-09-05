@@ -288,6 +288,9 @@ def run(
             )
         else:
             review_text = reviewer.review(dataset, inner.charts, inner.log)
+        # AI 报告生成也是一次 LLM 调用（消耗 token），计入 llm_calls
+        # （铲屎官 2026-09-05：reviewer 不能白嫖计数）
+        llm_calls += 1
         _p("review", 1, 1, "完成")
 
     duration_ms = int((time.perf_counter() - t0) * 1000)

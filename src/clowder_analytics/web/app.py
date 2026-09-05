@@ -262,6 +262,7 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
     with col_a:
         st.metric("路由", result.route)
     with col_b:
+        # G18：reviewer 调用也计入（Plan 生成 + AI 报告各计 1）
         st.metric("LLM 调用", result.llm_calls)
     with col_c:
         st.metric("执行步骤", f"{sum(1 for s in result.log if s.get('ok'))}/{len(result.log)}")

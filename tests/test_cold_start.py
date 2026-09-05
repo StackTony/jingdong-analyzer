@@ -139,7 +139,8 @@ def test_run_uses_cold_start_template_on_first_call():
         result = run("Top30 品牌", ds, library=lib,
                      generator=FakePlanGenerator(), reviewer=FakeReviewer())
         assert result.route == "A"  # 命中冷启动模板
-        assert result.llm_calls == 0
+        # G18 语义：reviewer 被调也计 1 次（冷启动模板 reviewer_enabled=True）
+        assert result.llm_calls == 1
 
 
 # ===== 仪表盘 =====
@@ -181,7 +182,8 @@ def test_compute_stats_after_runs():
         assert stats.total_runs == 3
         assert stats.a_hits == 3  # 全部命中冷启动模板
         assert stats.fallback_hits == 0
-        assert stats.avg_llm_calls == 0.0
+        # G18 语义：reviewer 调用计入 llm_calls（每次 run 调 reviewer 1 次）
+    assert stats.avg_llm_calls == 1.0
 
 
 def test_format_stats_output():

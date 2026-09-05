@@ -227,3 +227,81 @@ def _tmp_lib_dir():
     from pathlib import Path
     d = Path(tempfile.mkdtemp(prefix="g18-lib-"))
     return d
+
+
+# ===== 铲屎官补充（2026-09-05）：reviewer 调用也消耗 token，计入 llm_calls =====
+
+def test_run_counts_reviewer_call_in_llm_calls(tmp_path):
+    """reviewer 实际被调时 llm_calls +1——AI 报告生成也是一次 LLM 调用"""
+    df = pd.DataFrame({"brand": ["a", "b"], "sales": [10, 20]})
+    ds = _make_dataset(df)
+    library = FlowLibrary(base_dir=tmp_path)
+
+    class _RevEnabledGenerator(FakePlanGenerator):
+        def generate(self, question, dataset, intent=None):
+            plan = super().generate(question, dataset, intent=intent)
+            plan.reviewer_enabled = True
+            return plan
+
+    result = run(
+        question="Top10",
+        dataset=ds,
+        library=library,
+        generator=_RevEnabledGenerator(),
+        reviewer=FakeReviewer(),
+        enable_review=True,
+    )
+    assert result.review is not None
+    # fallback 生成 plan（1）+ reviewer 调用（1）= 2
+    assert result.llm_calls == 2
+
+
+def test_run_reviewer_not_called_no_llm_calls_bump(tmp_path):
+    """enable_review=False 时 reviewer 不调，llm_calls 不 bump"""
+    df = pd.DataFrame({"brand": ["a"], "sales": [1]})
+    ds = _make_dataset(df)
+    library = FlowLibrary(base_dir=tmp_path)
+
+    class _RevEnabledGenerator(FakePlanGenerator):
+        def generate(self, question, dataset, intent=None):
+            plan = super().generate(question, dataset, intent=intent)
+            plan.reviewer_enabled = True
+            return plan
+
+    result = run(
+        question="Top10",
+        dataset=ds,
+        library=library,
+        generator=_RevEnabledGenerator(),
+        reviewer=FakeReviewer(),
+        enable_review=False,
+    )
+    assert result.review is None
+    assert result.llm_calls == 1  # 只有 fallback 生成 plan
+
+
+def test_run_a_track_with_reviewer_counts_one_llm_call(tmp_path):
+    """A 轨命中（无 fallback）+ reviewer 开启：llm_calls = 1（只有 reviewer）"""
+    df = pd.DataFrame({"brand": ["a", "b", "c"], "sales": [100, 200, 50]})
+    ds = _make_dataset(df)
+    library = FlowLibrary(base_dir=tmp_path)
+    from clowder_analytics.flow_library.models import Template
+    from clowder_analytics.orchestrator.plan import Step
+
+    library.save_template(Template(
+        template_id="t-anomaly",
+        intent="异常归因",
+        schema_fingerprint=ds.schema_fingerprint,
+        steps=[Step(op="model.anomaly_attribution", args={
+            "value_col": "sales", "group_by": ["brand"], "baseline": "mean",
+        })],
+        stability="stable", confidence=0.9,
+        reviewer_enabled=True,
+    ))
+    result = run(
+        "哪些品牌销量异常", ds, library=library,
+        generator=FakePlanGenerator(), reviewer=FakeReviewer(),
+    )
+    assert result.route == "A"
+    assert result.review is not None
+    assert result.llm_calls == 1  # 只有 reviewer 这一次
