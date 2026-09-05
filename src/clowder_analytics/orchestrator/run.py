@@ -204,6 +204,7 @@ def run(
     reviewer: AIReviewer | None = None,
     enable_review: bool = True,
     progress: ProgressCallback | None = None,
+    on_review_delta: Callable[[str], None] | None = None,
 ) -> FullRunResult:
     """端到端运行（spec §6.2 / §7.5）
 
@@ -218,6 +219,9 @@ def run(
             阶段序列（真实 LLM fallback 路径完整版）：
               route(0/1) → llm(0/1, detail=模型名) → execute(1..N/N) → review(0/1) → promote(0/1)
             A/B 轨命中时无 llm 阶段。回调抛异常被吞掉，不影响分析主流程。
+        on_review_delta: 可选流式回调（G18）——reviewer 每产出一段文本调一次，
+            用于 web 端流式渲染 AI 思考过程。reviewer 不支持流式时
+            全文一次性回调（base 默认回落），行为向后兼容。
 
     Returns:
         FullRunResult
@@ -274,10 +278,16 @@ def run(
     inner = execute(plan, dataset, progress=progress)
 
     # Reviewer（plan.reviewer_enabled 且 enable_review 同时为 True）
+    # G18：on_review_delta 存在时走流式通道（不支持流式的 reviewer 全文一次回调）
     review_text: str | None = None
     if enable_review and plan.reviewer_enabled:
-        _p("review", detail="分析中")
-        review_text = reviewer.review(dataset, inner.charts, inner.log)
+        _p("review", detail="AI 分析中（流式输出）")
+        if on_review_delta is not None:
+            review_text = reviewer.review_stream(
+                dataset, inner.charts, inner.log, on_delta=on_review_delta,
+            )
+        else:
+            review_text = reviewer.review(dataset, inner.charts, inner.log)
         _p("review", 1, 1, "完成")
 
     duration_ms = int((time.perf_counter() - t0) * 1000)

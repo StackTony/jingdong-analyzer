@@ -50,6 +50,23 @@ class LLMProvider(ABC):
         """
         raise NotImplementedError
 
+    def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.3,
+        max_tokens: int = 2000,
+    ):
+        """流式 chat：逐 chunk yield assistant 文本片段（G18）
+
+        默认实现回落到非流式 chat()，把全文一次性 yield——
+        子类只需在支持流式协议时覆写（如 OpenAICompatibleProvider 用 stream=True）。
+        这样 Fake/Mock provider 不用改就能跑流式链路。
+
+        Yields:
+            文本片段（拼接后等于 chat() 的返回值）
+        """
+        yield self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+
 
 # ===== Provider 配置数据类 =====
 
@@ -107,6 +124,44 @@ class OpenAICompatibleProvider(LLMProvider):
 
         resp = client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.3,
+        max_tokens: int = 2000,
+    ):
+        """流式 chat（G18）：stream=True 逐 chunk yield 文本片段
+
+        用于 AI Reviewer 报告流式渲染——用户不再盯着死等，
+        模型边生成边看到内容。空 delta chunk（role 首块 / usage 尾块）跳过。
+        """
+        try:
+            from openai import OpenAI
+        except ImportError as e:
+            raise NotImplementedError(
+                "LLM Provider 需要 openai SDK：pip install openai"
+            ) from e
+
+        client = OpenAI(
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+            timeout=self.config.timeout_seconds,
+        )
+        stream = client.chat.completions.create(
+            model=self.config.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            text = getattr(delta, "content", None)
+            if text:
+                yield text
 
 
 # ===== 配置加载 =====

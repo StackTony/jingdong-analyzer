@@ -70,3 +70,26 @@ class AIReviewer(ABC):
             - 建议下一步
         """
         raise NotImplementedError
+
+    def review_stream(
+        self,
+        dataset: Dataset,
+        charts: list[Any],
+        run_log: list[dict[str, Any]],
+        on_delta: Any = None,
+    ) -> str:
+        """流式生成报告（G18）：每个文本片段回调 on_delta，返回全文
+
+        默认实现回落到 review()，全文一次性回调——
+        Fake/Legacy reviewer 不用改就能跑流式链路。
+
+        Args:
+            on_delta: 可选回调 on_delta(text_chunk)，每个流式片段调一次
+
+        Returns:
+            报告全文（与 review() 返回值同构）
+        """
+        full = self.review(dataset, charts, run_log)
+        if on_delta is not None:
+            on_delta(full)
+        return full
