@@ -44,6 +44,38 @@ class LLMReviewer(AIReviewer):
         )
         return content
 
+    def review_stream(
+        self,
+        dataset: Dataset,
+        charts: list[Any],
+        run_log: list[dict[str, Any]],
+        on_delta: Any = None,
+    ) -> str:
+        """流式生成三段式报告（G18）：逐 chunk 回调 on_delta，返回全文
+
+        provider.chat_stream 逐片段产出（OpenAI 兼容 stream=True）；
+        不支持流式的 provider（只有 chat）走 base 默认回落一次性返回。
+        prompt 构造与 review() 完全同构（_build_user_prompt 复用）。
+        """
+        system_prompt = get_prompt_section("reviewer")
+        user_prompt = self._build_user_prompt(dataset, charts, run_log)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        config_max_tokens = getattr(getattr(self.provider, "config", None), "max_tokens", 2000)
+        parts: list[str] = []
+        for chunk in self.provider.chat_stream(
+            messages=messages,
+            temperature=0.4,
+            max_tokens=config_max_tokens,
+        ):
+            parts.append(chunk)
+            if on_delta is not None:
+                on_delta(chunk)
+        return "".join(parts)
+
     def _build_user_prompt(
         self, dataset: Dataset, charts: list[Any], run_log: list[dict[str, Any]],
     ) -> str:

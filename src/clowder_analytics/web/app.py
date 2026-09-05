@@ -209,6 +209,21 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
         # 进度展示：st.status 分阶段容器 + execute 进度条（替代原死转圈 spinner）
         from clowder_analytics.orchestrator.progress_display import StProgressHolder
 
+        # G18：AI Reviewer 流式渲染——st.empty 占位，delta 到达时增量刷新，
+        # 用户看到 AI 思考过程逐步展开而不是死等（节流防每 chunk 重渲染卡顿）
+        review_placeholder = st.empty()
+        stream_state = {"buf": [], "dirty": 0}
+
+        def _on_review_delta(chunk: str) -> None:
+            stream_state["buf"].append(chunk)
+            stream_state["dirty"] += 1
+            if stream_state["dirty"] >= 8:  # 每 ~8 chunk 刷一次（节流）
+                try:
+                    review_placeholder.markdown("".join(stream_state["buf"]))
+                    stream_state["dirty"] = 0
+                except Exception:
+                    pass  # 渲染异常不反噬分析主流程
+
         with st.status("🚀 运行分析中...", expanded=True) as status:
             holder = StProgressHolder()
             holder.bind(status)
@@ -222,11 +237,17 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
                 reviewer=reviewer,
                 enable_review=enable_review,
                 progress=holder.callback,
+                on_review_delta=_on_review_delta,
             )
             status.update(
                 label=f"✅ 运行完成（{result.duration_ms / 1000:.1f}s）",
                 state="complete", expanded=False,
             )
+        # 流式区最终定格：全文（结果区还有正式渲染，这里清掉避免重复）
+        if result.review:
+            review_placeholder.empty()
+        else:
+            review_placeholder.empty()
         st.session_state.last_result = result
         st.session_state.last_question = question
 
@@ -241,6 +262,7 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
     with col_a:
         st.metric("路由", result.route)
     with col_b:
+        # G18：reviewer 调用也计入（Plan 生成 + AI 报告各计 1）
         st.metric("LLM 调用", result.llm_calls)
     with col_c:
         st.metric("执行步骤", f"{sum(1 for s in result.log if s.get('ok'))}/{len(result.log)}")
@@ -307,10 +329,11 @@ def _save_feedback(library: FlowLibrary, result, adopted: bool):
 
 
 def _format_run_log(log: list[dict]) -> str:
-    """把 executor run_log 渲染成 markdown 步骤表（G17 需求③：过程可见）
+    """把 executor run_log 渲染成 markdown 步骤表（G17 需求③ / G18 增强）
 
     每步一行：序号 + 成败标记 + op 名 + 人类可读摘要。
-    model 步的 report.chart_spec 显示产出的图表类型；失败步显示错误原因。
+    G18 增强：args（用到的列/参数）+ shape 变化（行数变化）+ chart 维度。
+    失败步显示错误原因。
     """
     if not log:
         return "_本次运行没有产生步骤日志_"
@@ -321,18 +344,62 @@ def _format_run_log(log: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _shape_bits(entry: dict) -> str:
+    """渲染数据形态变化：`33万行 → 20行`（shape_after 为 None 时只显示 before）"""
+    before = entry.get("shape_before")
+    after = entry.get("shape_after")
+    if before is None:
+        return ""
+    if after is None or tuple(after) == tuple(before):
+        return f" · {before[0]} 行"
+    return f" · {tuple(before)[0]} 行 → {tuple(after)[0]} 行"
+
+
+def _args_bits(entry: dict) -> str:
+    """渲染本步参数：`按 brand 聚合 sales` 类摘要（列名优先，值太长截断）"""
+    args = entry.get("args")
+    if not isinstance(args, dict) or not args:
+        return ""
+    bits = []
+    for k, v in args.items():
+        if isinstance(v, (list, tuple)):
+            val = "/".join(str(x) for x in v[:3])
+        elif isinstance(v, dict):
+            val = "/".join(str(x) for x in list(v.keys())[:3]) or str(v)
+        else:
+            val = str(v)
+        if len(val) > 24:
+            val = val[:24] + "…"
+        bits.append(f"{k}={val}")
+    return f" · {', '.join(bits)}" if bits else ""
+
+
 def _step_detail(entry: dict) -> str:
-    """从单条 run_log entry 提取摘要：成功取 report 关键字段，失败取 err"""
+    """从单条 run_log entry 提取摘要（G18 增强）
+
+    成功步：args + shape 变化 + report 明细（chart 维度或 op 统计）。
+    失败步：err（含 args 便于定位哪组参数失败）。
+    旧格式 entry（无 args/shape，report 只有 chart_spec 字符串）向后兼容。
+    """
     if not entry.get("ok"):
         err = entry.get("err")
-        return f" — 失败：{err}" if err else " — 失败"
+        msg = f" — 失败：{err}" if err else " — 失败"
+        return msg + _args_bits(entry)
+
     report = entry.get("report")
-    if not isinstance(report, dict) or not report:
-        return ""
-    if "chart_spec" in report:
-        return f" → 产出 {report['chart_spec']} 图"
-    bits = [f"{k}={v}" for k, v in list(report.items())[:2]]
-    return f" — {', '.join(bits)}"
+    report_bits = ""
+    if isinstance(report, dict) and report:
+        if "chart_spec" in report:
+            chart_desc = [f"产出 {report['chart_spec']} 图"]
+            for key in ("title", "x", "y"):
+                if report.get(key):
+                    chart_desc.append(f"{key}={report[key]}")
+            report_bits = f" → {', '.join(chart_desc)}"
+        else:
+            bits = [f"{k}={v}" for k, v in list(report.items())[:2]]
+            report_bits = f" — {', '.join(bits)}"
+
+    return f"{report_bits}{_args_bits(entry)}{_shape_bits(entry)}"
 
 
 # ===== G16: Flow Library 管理（查看/更新/删除）=====

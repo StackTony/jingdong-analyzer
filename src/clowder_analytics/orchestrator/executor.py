@@ -84,7 +84,14 @@ def execute(
     for idx, step in enumerate(plan.steps):
         if progress is not None:
             _report(progress, "execute", idx + 1, total_steps, step.op)
-        entry = {"step": step.op, "ok": False}
+        # G18：记录本步参数 + 数据形态变化（"执行过程输出太少"）
+        entry = {
+            "step": step.op,
+            "ok": False,
+            "args": dict(step.args),
+            "shape_before": df.shape,
+            "shape_after": None,
+        }
         try:
             op_fn = _OP_REGISTRY.get(step.op)
             if op_fn is None:
@@ -99,11 +106,18 @@ def execute(
             # model op 的 op_report 是 ChartSpec
             if isinstance(op_report, ChartSpec):
                 charts.append(op_report)
-                entry["report"] = {"chart_spec": op_report.type}
+                # G18：report 不只存 type——title/x/y 维度一并入 log
+                entry["report"] = {
+                    "chart_spec": op_report.type,
+                    "title": op_report.title,
+                    "x": op_report.x,
+                    "y": op_report.y,
+                }
             else:
                 entry["report"] = op_report
 
             df = new_df
+            entry["shape_after"] = df.shape
             entry["ok"] = True
         except OpError as e:
             entry["err"] = str(e)
