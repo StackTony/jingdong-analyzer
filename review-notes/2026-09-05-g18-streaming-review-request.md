@@ -58,8 +58,12 @@ created: 2026-09-05
 
 - TDD 红绿：17 新用例（`test_g18_run_detail.py` 8 + `test_g18_streaming.py` 9），
   先红后绿。
-- 全量：`PYTHONPATH=src python -m pytest tests -q` → **303 passed, 5 skipped**
-  （基线 286 + 17 新增，无回归）。
+- **补充 commit c42fd2e**（铲屎官 review 中追问）：reviewer 调用计入
+  `llm_calls`（token 消耗对齐）——3 新用例 + test_cold_start 两处期望
+  更新（原 0 是漏计，冷启动模板 reviewer_enabled=True 且未关 enable_review，
+  A 轨 + reviewer = 1 才是正确值）。
+- 全量：`PYTHONPATH=src python -m pytest tests -q` → **306 passed, 5 skipped**
+  （基线 286 + 20 新增，无回归）。
 - 覆盖：base 回落（provider/reviewer 两层）、OpenAI stream mock
   （chunk 拼接 + 空 delta 跳过 + kwargs 断言 stream=True）、run 转发
   （enable_review=False 不触发）、web 旧格式向后兼容。
@@ -69,6 +73,10 @@ created: 2026-09-05
 1. 节流阈值 8 是拍的，真实 LLM chunk 频率下体感待验证（连调时观察）。
 2. `_tmp_lib_dir` 用了 tempfile.mkdtemp 不清理——测试量级可接受，
   review 时看是否要换 tmp_path fixture（我当时为绕开 fixture 作用域）。
+3. **llm_calls 语义边界**：计的是"调用次数"不是"token 数"——token 数
+  需从 API response 提取 usage 字段，provider 抽象层目前不透出。
+  若铲屎官要真实 token 统计是 P7+ 项（涉及 provider 接口扩展 +
+  流式 response 的 usage 在末 chunk，需要聚合）。
 
 ## Next Action
 
