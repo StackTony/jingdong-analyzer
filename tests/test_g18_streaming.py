@@ -1,5 +1,8 @@
 """G18 红测：AI Reviewer 流式输出（用户不再死等）
 
+G19 契约升级注：chat_stream 现返回 (kind, text) 二元组、
+on_delta 现为双参数 (kind, chunk)——本文件断言已同步更新。
+
 需求（铲屎官 2026-09-05）：「AI reviewer的AI思考过程也可以展示出来，
 可以流式输出，不然用户一直在等待」
 
@@ -46,7 +49,8 @@ class _StreamMockProvider(LLMProvider):
 
     def chat_stream(self, messages, temperature=0.3, max_tokens=2000):
         self.last_stream_messages = messages
-        yield from self.chunks
+        for c in self.chunks:
+            yield ("content", c)
 
 
 # ===== Provider 层 =====
@@ -59,7 +63,7 @@ def test_provider_chat_stream_base_falls_back_to_chat():
 
     p = _NoStreamProvider()
     chunks = list(p.chat_stream([{"role": "user", "content": "hi"}]))
-    assert chunks == ["full text"]
+    assert chunks == [("content", "full text")]
 
 
 def test_openai_provider_chat_stream_yields_chunks():
@@ -69,9 +73,9 @@ def test_openai_provider_chat_stream_yields_chunks():
 
     fake_client = MagicMock()
     chunk1, chunk2, chunk3 = MagicMock(), MagicMock(), MagicMock()
-    chunk1.choices = [MagicMock(delta=MagicMock(content="## 异常"))]
-    chunk2.choices = [MagicMock(delta=MagicMock(content="解释\n"))]
-    chunk3.choices = [MagicMock(delta=MagicMock(content="## 趋势"))]
+    chunk1.choices = [MagicMock(delta=MagicMock(content="## 异常", reasoning_content=None))]
+    chunk2.choices = [MagicMock(delta=MagicMock(content="解释\n", reasoning_content=None))]
+    chunk3.choices = [MagicMock(delta=MagicMock(content="## 趋势", reasoning_content=None))]
     fake_client.chat.completions.create.return_value = iter([chunk1, chunk2, chunk3])
 
     with patch("openai.OpenAI", return_value=fake_client):
@@ -79,7 +83,9 @@ def test_openai_provider_chat_stream_yields_chunks():
             messages=[{"role": "user", "content": "hi"}],
             temperature=0.4, max_tokens=1500,
         ))
-    assert chunks == ["## 异常", "解释\n", "## 趋势"]
+    assert chunks == [
+        ("content", "## 异常"), ("content", "解释\n"), ("content", "## 趋势"),
+    ]
     create_kwargs = fake_client.chat.completions.create.call_args.kwargs
     assert create_kwargs["stream"] is True
     assert create_kwargs["max_tokens"] == 1500
@@ -91,13 +97,13 @@ def test_openai_provider_chat_stream_empty_delta_skipped():
     p = OpenAICompatibleProvider(config)
     fake_client = MagicMock()
     c_role = MagicMock()
-    c_role.choices = [MagicMock(delta=MagicMock(content=None))]
+    c_role.choices = [MagicMock(delta=MagicMock(content=None, reasoning_content=None))]
     c_text = MagicMock()
-    c_text.choices = [MagicMock(delta=MagicMock(content="abc"))]
+    c_text.choices = [MagicMock(delta=MagicMock(content="abc", reasoning_content=None))]
     fake_client.chat.completions.create.return_value = iter([c_role, c_text])
     with patch("openai.OpenAI", return_value=fake_client):
         chunks = list(p.chat_stream(messages=[{"role": "user", "content": "x"}]))
-    assert chunks == ["abc"]
+    assert chunks == [("content", "abc")]
 
 
 # ===== Reviewer 层 =====
@@ -112,9 +118,9 @@ def test_reviewer_review_stream_base_falls_back_to_review():
     ds = _make_dataset(df)
     r = _LegacyReviewer()
     deltas: list[str] = []
-    out = r.review_stream(ds, [], [], on_delta=deltas.append)
+    out = r.review_stream(ds, [], [], on_delta=lambda k, c: deltas.append((k, c)))
     assert out == "## 报告"
-    assert deltas == ["## 报告"]
+    assert deltas == [("content", "## 报告")]
 
 
 def test_llm_reviewer_review_stream_accumulates_and_notifies():
@@ -123,10 +129,12 @@ def test_llm_reviewer_review_stream_accumulates_and_notifies():
     ds = _make_dataset(df)
     mock = _StreamMockProvider(["## 异常解释\n", "内容A\n", "## 建议下一步"])
     reviewer = LLMReviewer(provider=mock)
-    deltas: list[str] = []
-    out = reviewer.review_stream(ds, [], [], on_delta=deltas.append)
+    deltas: list = []
+    out = reviewer.review_stream(ds, [], [], on_delta=lambda k, c: deltas.append((k, c)))
     assert out == "## 异常解释\n内容A\n## 建议下一步"
-    assert deltas == ["## 异常解释\n", "内容A\n", "## 建议下一步"]
+    assert deltas == [
+        ("content", "## 异常解释\n"), ("content", "内容A\n"), ("content", "## 建议下一步"),
+    ]
     # prompt 与 review() 同构（system + user）
     assert mock.last_stream_messages[0]["role"] == "system"
     assert "brand" in mock.last_stream_messages[1]["content"]
@@ -151,10 +159,10 @@ def test_llm_reviewer_review_stream_provider_without_stream_support():
     df = pd.DataFrame({"a": [1]})
     ds = _make_dataset(df)
     reviewer = LLMReviewer(provider=_ChatOnlyProvider())
-    deltas: list[str] = []
-    out = reviewer.review_stream(ds, [], [], on_delta=deltas.append)
+    deltas: list = []
+    out = reviewer.review_stream(ds, [], [], on_delta=lambda k, c: deltas.append((k, c)))
     assert out == "一次性全文"
-    assert deltas == ["一次性全文"]
+    assert deltas == [("content", "一次性全文")]
 
 
 # ===== run() 层 =====
@@ -175,8 +183,8 @@ def test_run_forwards_on_review_delta():
         def review_stream(self, dataset, charts, run_log, on_delta=None):
             self.review_called = True
             if on_delta:
-                on_delta("chunk1 ")
-                on_delta("chunk2")
+                on_delta("content", "chunk1 ")
+                on_delta("content", "chunk2")
             return "chunk1 chunk2"
 
     class _RevEnabledGenerator(FakePlanGenerator):
@@ -189,7 +197,7 @@ def test_run_forwards_on_review_delta():
             return plan
 
     reviewer = _StreamReviewer()
-    deltas: list[str] = []
+    deltas: list = []
     result = run(
         question="Top10 品牌",
         dataset=ds,
@@ -197,10 +205,10 @@ def test_run_forwards_on_review_delta():
         generator=_RevEnabledGenerator(),
         reviewer=reviewer,
         enable_review=True,
-        on_review_delta=deltas.append,
+        on_review_delta=lambda k, c: deltas.append((k, c)),
     )
     assert reviewer.review_called is True
-    assert deltas == ["chunk1 ", "chunk2"]
+    assert deltas == [("content", "chunk1 "), ("content", "chunk2")]
     assert result.review == "chunk1 chunk2"
 
 

@@ -209,20 +209,35 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
         # 进度展示：st.status 分阶段容器 + execute 进度条（替代原死转圈 spinner）
         from clowder_analytics.orchestrator.progress_display import StProgressHolder
 
-        # G18：AI Reviewer 流式渲染——st.empty 占位，delta 到达时增量刷新，
-        # 用户看到 AI 思考过程逐步展开而不是死等（节流防每 chunk 重渲染卡顿）
+        # G19：AI 思考过程 + 报告正文双区流式渲染。
+        # 根因：GLM 推理模型思考阶段 delta.content 全程为 None，思考内容在
+        # reasoning_content——G18 只透 content 导致思考期间占位区空白。
+        # 现按 kind 分流：思考灰色小字区 + 正文区，各自节流增量刷新。
+        reasoning_placeholder = st.empty()
         review_placeholder = st.empty()
-        stream_state = {"buf": [], "dirty": 0}
+        stream_state = {
+            "reasoning": [], "content": [], "dirty": 0,
+        }
 
-        def _on_review_delta(chunk: str) -> None:
-            stream_state["buf"].append(chunk)
+        def _flush_stream() -> None:
+            """把累积的思考 + 正文刷到对应占位区（异常不反噬分析）"""
+            try:
+                if stream_state["reasoning"]:
+                    reasoning_placeholder.markdown(
+                        "> 🧠 **AI 思考中**…（灰色斜体为思考过程，正式报告在下方）\n\n"
+                        "> " + "".join(stream_state["reasoning"]).replace("\n", "\n> ")
+                    )
+                if stream_state["content"]:
+                    review_placeholder.markdown("".join(stream_state["content"]))
+                stream_state["dirty"] = 0
+            except Exception:
+                pass  # 渲染异常不反噬分析主流程
+
+        def _on_review_delta(kind: str, chunk: str) -> None:
+            stream_state.setdefault(kind, []).append(chunk)
             stream_state["dirty"] += 1
             if stream_state["dirty"] >= 8:  # 每 ~8 chunk 刷一次（节流）
-                try:
-                    review_placeholder.markdown("".join(stream_state["buf"]))
-                    stream_state["dirty"] = 0
-                except Exception:
-                    pass  # 渲染异常不反噬分析主流程
+                _flush_stream()
 
         with st.status("🚀 运行分析中...", expanded=True) as status:
             holder = StProgressHolder()
@@ -243,11 +258,10 @@ def _render_analysis_tab(llm_choice, enable_review: bool):
                 label=f"✅ 运行完成（{result.duration_ms / 1000:.1f}s）",
                 state="complete", expanded=False,
             )
-        # 流式区最终定格：全文（结果区还有正式渲染，这里清掉避免重复）
-        if result.review:
-            review_placeholder.empty()
-        else:
-            review_placeholder.empty()
+        # 结束时最终定格一次（<8 chunk 的短流也保证刷出来），随后清思考区
+        _flush_stream()
+        reasoning_placeholder.empty()
+        # 结果区有正式的完整报告渲染，正文流式区保留（内容一致不闪烁）
         st.session_state.last_result = result
         st.session_state.last_question = question
 
