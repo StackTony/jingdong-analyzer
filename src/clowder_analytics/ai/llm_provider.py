@@ -56,16 +56,18 @@ class LLMProvider(ABC):
         temperature: float = 0.3,
         max_tokens: int = 2000,
     ):
-        """流式 chat：逐 chunk yield assistant 文本片段（G18）
+        """流式 chat：逐 chunk yield (kind, text) 二元组（G19 增强）
 
-        默认实现回落到非流式 chat()，把全文一次性 yield——
+        默认实现回落到非流式 chat()，全文一次性 yield ('content', 全文)——
         子类只需在支持流式协议时覆写（如 OpenAICompatibleProvider 用 stream=True）。
         这样 Fake/Mock provider 不用改就能跑流式链路。
 
         Yields:
-            文本片段（拼接后等于 chat() 的返回值）
+            (kind, text)：kind='reasoning'（思考 token，GLM reasoning 模型）
+            或 'content'（正文）。reasoning 段拼接后不等于 chat() 返回值
+            （chat 只返回 content）。
         """
-        yield self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        yield ("content", self.chat(messages, temperature=temperature, max_tokens=max_tokens))
 
 
 # ===== Provider 配置数据类 =====
@@ -131,10 +133,16 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 2000,
     ):
-        """流式 chat（G18）：stream=True 逐 chunk yield 文本片段
+        """流式 chat（G18 / G19 增强）：stream=True 逐 chunk yield (kind, text)
 
-        用于 AI Reviewer 报告流式渲染——用户不再盯着死等，
-        模型边生成边看到内容。空 delta chunk（role 首块 / usage 尾块）跳过。
+        用于 AI Reviewer 报告流式渲染。G19 根因修复：GLM 推理模型思考阶段
+        delta.content 全程为 None，思考内容在 delta.reasoning_content——
+        只透传 content 会导致思考期间占位区空白。现同时透出两段：
+        - ('reasoning', ...) 思考 token（web 端灰色小字展示思考过程）
+        - ('content', ...)   正文（报告本体）
+
+        空 delta chunk（role 首块 / usage 尾块）跳过；标准 OpenAI 端点
+        delta 无 reasoning_content 字段时 getattr 兜底 None 不炸。
         """
         try:
             from openai import OpenAI
@@ -159,9 +167,12 @@ class OpenAICompatibleProvider(LLMProvider):
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ("reasoning", reasoning)
             text = getattr(delta, "content", None)
             if text:
-                yield text
+                yield ("content", text)
 
 
 # ===== 配置加载 =====

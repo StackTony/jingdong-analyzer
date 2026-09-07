@@ -78,18 +78,19 @@ class AIReviewer(ABC):
         run_log: list[dict[str, Any]],
         on_delta: Any = None,
     ) -> str:
-        """流式生成报告（G18）：每个文本片段回调 on_delta，返回全文
+        """流式生成报告（G18 / G19）：每个片段回调 on_delta(kind, chunk)，返回全文
 
-        默认实现回落到 review()，全文一次性回调——
+        默认实现回落到 review()，全文一次性回调 ('content', 全文)——
         Fake/Legacy reviewer 不用改就能跑流式链路。
 
         Args:
-            on_delta: 可选回调 on_delta(text_chunk)，每个流式片段调一次
+            on_delta: 可选回调 on_delta(kind, chunk)。kind='reasoning'
+                （思考 token）或 'content'（正文）——web 端按 kind 分流渲染。
 
         Returns:
-            报告全文（与 review() 返回值同构）
+            报告正文全文（与 review() 返回值同构，reasoning 不混入）
         """
         full = self.review(dataset, charts, run_log)
         if on_delta is not None:
-            on_delta(full)
+            on_delta("content", full)
         return full
